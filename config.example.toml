@@ -1,0 +1,20 @@
+# Read from ~/.config/camcam/config.toml by default.
+# Export password variables in the environment used to launch CamCam.
+# Camera order here is the wall order.
+
+[[cameras]]
+name = "Front door"
+type = "onvif"
+url = "http://192.168.1.40/onvif/device_service"
+username = "viewer"
+password_env = "CAMCAM_FRONT_DOOR_PASSWORD"
+
+[[cameras]]
+name = "Workshop"
+type = "rtmp"
+url = "rtmp://192.168.1.20/live/workshop"
+
+[[cameras]]
+name = "Bench camera"
+type = "rtsp"
+url = "rtsp://192.168.1.42/stream1"
