@@ -42,6 +42,8 @@ cargo run --release
 ```
 
 Run `./scripts/build-app.sh` to create `.build/CamCam.app` for Finder.
+Add `--open` to launch it, `--install` to replace `/Applications/CamCam.app`, or
+`--install --open` to install and launch the installed copy. Other arguments pass to Cargo.
 The app links to the installed Homebrew libraries. Keep those available when running it.
 
 ## Configuration
