@@ -1,0 +1,23 @@
+[[cameras]]
+name = "Workshop / RTMP"
+type = "rtmp"
+url = "rtmp://127.0.0.1:11935/workshop"
+
+[[cameras]]
+name = "Front door / ONVIF"
+type = "onvif"
+url = "http://127.0.0.1:18080/onvif"
+username = "viewer"
+password_env = "CAMCAM_FIXTURE_PASSWORD"
+
+[[cameras]]
+name = "Legacy ONVIF"
+type = "onvif"
+url = "http://127.0.0.1:18080/legacy"
+username = "viewer"
+password_env = "CAMCAM_FIXTURE_PASSWORD"
+
+[[cameras]]
+name = "Bench / RTSP"
+type = "rtsp"
+url = "rtsp://127.0.0.1:18554/main"

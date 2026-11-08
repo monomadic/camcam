@@ -2,8 +2,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-swift build -c release "$@"
-binary_dir=$(swift build -c release --show-bin-path "$@")
+cargo build --release "$@"
+binary_dir="${CARGO_TARGET_DIR:-target}/release"
 bundle="$PWD/.build/CamCam.app"
 mkdir -p "$bundle/Contents/MacOS"
 cp "$binary_dir/camcam" "$bundle/Contents/MacOS/camcam"

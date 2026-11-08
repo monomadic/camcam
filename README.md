@@ -1,55 +1,72 @@
 # CamCam
 
-A small macOS camera wall. Click a camera to focus it. Click again or press Esc to return.
+A small Rust/macOS camera wall. Click a camera to focus it. Click again or press Esc to return.
 
 - RTMP playback and direct RTSP streams.
 - ONVIF Media1 and Media2 at configured device-service addresses.
-- Lower-resolution ONVIF profile for the wall, highest-resolution profile for focus.
+- Smaller ONVIF profile for the wall, larger profile for focus.
 - Independent connections, bounded frame delivery, and reconnects with exponential backoff.
-- H.264 and HEVC through VideoToolbox, with native pixel-buffer presentation.
+- H.264 and HEVC through VideoToolbox, presented with wgpu on Metal.
 
-The first implementation uses Swift/AppKit, FFmpeg network input, and Apple's video display
-layers. Switchblade's dark grid and Quickview are the interaction reference. This keeps the
-macOS shell small and lets decoded pixel buffers go directly to the system compositor.
-The saved [proposal](PROPOSAL.md) records the initial Rust/wgpu direction.
+## Architecture and Switchblade reference
+
+CamCam follows Switchblade's winit/wgpu window and rendering architecture, dark video grid,
+Quickview interaction, aspect-preserving video, and frame-driven redraws. The reference
+implementation is in Switchblade's crates/sb-window/src/lib.rs, render.rs, and schedule.rs.
+CamCam uses eframe/egui over winit 0.30 and wgpu 30 for its small UI.
+It builds independently of the Switchblade checkout.
+
+The app, config parser, ONVIF client, stream workers, decoder ownership, and GPU renderer
+are Rust. FFmpeg provides live RTMP/RTSP demuxing through ffmpeg-sys-next.
+VideoToolbox produces retained CVPixelBuffers. CoreVideo imports their NV12 or P010 planes
+into Metal textures on wgpu's device. A GPU shader converts YUV to RGB, with video range
+and BT.601/709/2020 matrix handling. Pixel buffers stay alive until in-flight GPU work
+releases them. There is no CPU pixel readback or CPU color conversion in playback.
+
+Each stream worker owns one replaceable frame slot and wakes the UI when it changes.
+The window uses vsync with one queued surface frame and sleeps between updates.
+Hidden wall feeds continue decoding to make returning from focus immediate.
+
+[PROPOSAL.md](PROPOSAL.md) records the original product scope and Rust/wgpu direction.
 
 ## Build and run
 
-Requires macOS 14+, Swift 6, pkg-config, and FFmpeg development libraries. The installed
-FFmpeg and its dependencies may require a newer macOS version. This machine's Homebrew
-FFmpeg requires macOS 26.
+Requires macOS, Rust, pkg-config, and FFmpeg development libraries. The installed
+FFmpeg and its dependencies determine the minimum macOS version. This machine's
+Homebrew FFmpeg requires macOS 26.
 
 ```sh
 brew install ffmpeg pkg-config
-swift build -c release
-swift run -c release camcam
+cargo build --release
+cargo run --release
 ```
 
-For a local Finder-launchable app, run `./scripts/build-app.sh` and open
-`.build/CamCam.app`. The app links to the installed Homebrew libraries. Keep those available
-when running it.
+Run `./scripts/build-app.sh` to create `.build/CamCam.app` for Finder.
+The app links to the installed Homebrew libraries. Keep those available when running it.
 
 ## Configuration
 
 Copy [config.example.toml](config.example.toml) to `~/.config/camcam/config.toml`, edit the
-addresses, then launch CamCam. Entries appear in file order. Config changes apply on relaunch.
+addresses, then launch CamCam. The config format is preserved from the initial viewer.
+Entries appear in file order. Config changes apply on relaunch.
 
 ```sh
 mkdir -p ~/.config/camcam
 cp config.example.toml ~/.config/camcam/config.toml
 export CAMCAM_FRONT_DOOR_PASSWORD='your-camera-password'
-swift run -c release camcam
+cargo run --release
 ```
 
-Use `camcam --config /path/to/config.toml` to choose another file. Password environment
-variables must be available to the launched process. For a Finder app launched from a shell,
+Use `camcam --config /path/to/config.toml` to choose another file. Password variables must
+be available to the launched process. For a Finder app launched from a shell,
 `open --env CAMCAM_FRONT_DOOR_PASSWORD=... .build/CamCam.app` passes the variable explicitly.
-Each camera may use `username` and `password_env`. Existing URL credentials take precedence.
+Each camera may use `username` and `password_env`. Existing stream URL credentials take precedence.
 
 ONVIF entries take a device-service URL, typically `http://camera/onvif/device_service`.
-CamCam reads services, profiles, and stream URIs. It supports WS-Security password digest
-and HTTP Digest authentication. HTTP Basic authentication is accepted over HTTPS.
-Camera clock skew can cause WS-Security authentication to fail.
+CamCam reads services, profiles, and stream URIs, with a GetCapabilities fallback for
+older devices. It selects H.264/HEVC profiles and skips incompatible advertised encodings.
+WS-Security password digest and HTTP Digest authentication are supported. HTTP Basic is
+accepted over HTTPS. Camera clock skew can cause WS-Security authentication to fail.
 
 Only same-host HTTP(S) media-service addresses are accepted. Configured credentials are
 added to discovered RTSP URLs only when the stream host matches the device host. A camera
@@ -60,35 +77,32 @@ such as MediaMTX, whose playback URL can then be added to CamCam.
 
 ## Playback behavior
 
-Every tile connects independently. Hover a failing tile for its connection-stage error.
-A stalled connection times out, then retries after 1, 2, 4, 8, 16, and 30 seconds. The
-backoff resets after a decoded frame. Initial connection and stream analysis have a
-12-second deadline. A live feed without decoded frames times out after 8 seconds.
+Each tile connects independently. Hover a failing tile for its connection-stage error.
+A disconnected or stalled feed retries after 1, 2, 4, 8, 16, and 30 seconds. The backoff
+resets after a decoded frame. Initial stream connection and analysis have a 12-second
+deadline. A live feed without decoded frames times out after 8 seconds.
 
-Focus starts an additional main-stream connection when a larger ONVIF profile is
-available. The wall feed stays visible until the main feed produces a frame. If the main
-stream fails, the wall feed remains available. Returning to the wall closes the additional
-connection. Hidden wall feeds keep decoding so returning is immediate.
+Focus opens an additional main-stream connection when a larger ONVIF profile is available.
+The wall feed stays visible until the main feed produces a frame. If the main stream
+fails, the wall feed remains available. Returning to the wall stops the extra connection.
+Workers stop through cancellation, including during network input and retry backoff.
 
-The decoder waits for a keyframe when joining a live stream. The UI mailbox retains at most
-one pending pixel buffer per stream. Frames are presented immediately, with aspect ratio
-preserved. Audio is currently silent.
+The decoder waits for a keyframe when joining a live stream. Video preserves its aspect
+ratio. Audio is silent.
 
-The `LIVE · VT` badge confirms decoded VideoToolbox pixel buffers. CamCam accepts H.264 and
-HEVC and declines FFmpeg software pixel formats. FFmpeg requires hardware decoding for
-H.264. Its HEVC VideoToolbox path enables hardware acceleration but can use Apple's software
-decoder on unsupported hardware. HEVC hardware use needs validation on the target machine.
+The `LIVE · VT` badge confirms decoded VideoToolbox pixel buffers. CamCam declines FFmpeg
+software pixel formats. FFmpeg requires hardware decoding for H.264. Its HEVC VideoToolbox
+path enables hardware acceleration but can use Apple's software decoder on unsupported
+hardware. Ten-bit HEVC plane import is supported. HDR tone mapping needs separate validation.
 
-## Checks
+## Verification
 
-`swift test --disable-xctest` checks config loading, credential escaping, and invalid camera settings.
-The opt-in live test checks Media1/Media2 profile selection and repeatedly joins RTMP and
-RTSP streams through VideoToolbox, including joins between keyframes.
+`cargo test`, `cargo fmt --check`, and `cargo clippy --all-targets -- -D warnings` run the
+ordinary checks. Tests requiring live fixtures and macOS GPU access are explicitly ignored
+in the ordinary test run.
 
-To reproduce the live test, install MediaMTX and run the fixture script. It starts
-loopback-only RTMP, RTSP, and ONVIF services, publishes three synthetic feeds, runs the
-tests, and stops its fixture processes. Ports 11935, 18554, and 18080 must be available.
-Run it with access to the macOS video hardware.
+The fixture script starts loopback RTMP, RTSP, and ONVIF services, runs all tests, then stops
+its processes. Ports 11935, 18554, and 18080 must be available.
 
 ```sh
 brew install mediamtx
@@ -97,5 +111,13 @@ brew install mediamtx
 MEDIAMTX=/path/to/mediamtx ./scripts/test-live.sh
 ```
 
-These are synthetic local fixtures. Physical-camera compatibility, HEVC, and sustained
-load need measurement on the intended cameras and Mac.
+The live suite checks Media1/Media2 profile selection, WS-Security and HTTP Digest,
+repeated H.264/HEVC joins through VideoToolbox, native Metal plane import, rendered color
+bars, four concurrent feeds, focus promotion to the main stream, Esc returning to the
+wall, automatic recovery after a publisher restart, and cancellation during backoff.
+The UI tests send pointer and keyboard events through egui and render the normal
+application paint callbacks into GPU textures. Wall and focus captures are saved under
+`target/verification/`.
+
+These are synthetic local fixtures. Physical-camera compatibility and sustained load
+still need measurement on the intended cameras and Mac.

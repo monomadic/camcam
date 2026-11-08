@@ -37,7 +37,7 @@ YAML
 
 "$MEDIAMTX" "$fixture_dir/server.yml" > "$fixture_dir/server.log" 2>&1 &
 fixture_pids="$fixture_pids $!"
-python3 Tests/CamCamTests/Fixtures/onvif.py > "$fixture_dir/onvif.log" 2>&1 &
+python3 tests/fixtures/onvif.py > "$fixture_dir/onvif.log" 2>&1 &
 fixture_pids="$fixture_pids $!"
 sleep 1
 # A bind failure must fail the run instead of testing an existing service.
@@ -55,7 +55,11 @@ ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi -i smptebars=size=480x
     -an -c:v libx264 -preset ultrafast -tune zerolatency -g 12 \
     -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:18554/sub > "$fixture_dir/sub.log" 2>&1 &
 fixture_pids="$fixture_pids $!"
+ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi -i smptebars=size=480x270:rate=12 \
+    -vf format=p010le -an -c:v hevc_videotoolbox -profile:v main10 -g 12 \
+    -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:18554/hevc10 > "$fixture_dir/hevc10.log" 2>&1 &
+fixture_pids="$fixture_pids $!"
 sleep 3
 for pid in $fixture_pids; do kill -0 "$pid"; done
 
-CAMCAM_TEST_FEEDS=1 swift test --disable-xctest "$@"
+CAMCAM_FIXTURE_PASSWORD=fixture-password cargo test "$@" -- --include-ignored --test-threads=1

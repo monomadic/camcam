@@ -1,7 +1,8 @@
 """Loopback-only ONVIF Media1/Media2 fixture for the opt-in Swift tests."""
 
 from base64 import b64decode
-from hashlib import sha1
+from hashlib import md5, sha1
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree
 
@@ -36,7 +37,34 @@ def profile(token, width, height, namespace, encoding="H264"):
 
 
 class SOAP(BaseHTTPRequestHandler):
+    def authenticated(self):
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Digest "):
+            return False
+        fields = {
+            match[0]: match[1] or match[2]
+            for match in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', header)
+        }
+        assert fields["username"] == "viewer"
+        assert fields["uri"] == self.path
+        assert fields["qop"] == "auth"
+        ha1 = md5(b"viewer:CamCam:fixture-password").hexdigest()
+        ha2 = md5(f"POST:{self.path}".encode()).hexdigest()
+        expected = md5(
+            f'{ha1}:fixture-http-nonce:{fields["nc"]}:{fields["cnonce"]}:auth:{ha2}'.encode()
+        ).hexdigest()
+        return fields["response"] == expected
+
     def do_POST(self):
+        if self.path == "/digest" and not self.authenticated():
+            self.send_response(401)
+            self.send_header(
+                "WWW-Authenticate",
+                'Digest realm="CamCam", nonce="fixture-http-nonce", qop="auth", algorithm=MD5',
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         root = ElementTree.fromstring(
             self.rfile.read(int(self.headers["Content-Length"]))
         )
