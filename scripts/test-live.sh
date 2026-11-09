@@ -39,6 +39,8 @@ YAML
 fixture_pids="$fixture_pids $!"
 python3 tests/fixtures/onvif.py > "$fixture_dir/onvif.log" 2>&1 &
 fixture_pids="$fixture_pids $!"
+python3 tests/fixtures/ws_discovery.py > "$fixture_dir/discovery.log" 2>&1 &
+fixture_pids="$fixture_pids $!"
 sleep 1
 # A bind failure must fail the run instead of testing an existing service.
 for pid in $fixture_pids; do kill -0 "$pid"; done

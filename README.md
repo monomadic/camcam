@@ -46,6 +46,38 @@ Add `--open` to launch it, `--install` to replace `/Applications/CamCam.app`, or
 `--install --open` to install and launch the installed copy. Other arguments pass to Cargo.
 The app links to the installed Homebrew libraries. Keep those available when running it.
 
+## Discover cameras
+
+```sh
+cargo run --release -- --discover
+# Choose a different config destination.
+cargo run --release -- --discover --config /path/to/config.toml
+# Launch the bundled app in discovery mode.
+open .build/CamCam.app --args --discover
+```
+
+Discovery opens a separate screen and scans the selected local IPv4 interface. Choose the
+interface and scan range, click a camera to preview it, then tick the cameras to add and
+choose **Save selected and open wall**. Names, addresses, usernames, and password variable
+names can be edited before previewing or saving. Export password variables before launching
+CamCam, using the same credentials format as the normal camera wall.
+
+ONVIF cameras are found using WS-Discovery multicast probes. RTSP discovery checks ports
+554, 8554, and 10554 and tries a short list of common stream paths. An RTSP service can be
+listed even when its stream path needs to be entered manually, particularly when the
+camera requires authentication. The preview reports connection errors for these entries.
+
+The initial scan range covers at most a /24 around the interface address. The range can be
+changed within that interface's subnet, up to 4096 addresses per scan. Progress and a stop
+button keep scanning separate from playback.
+The bundled app includes a Local Network usage description for macOS. Allow local network
+access when prompted. If multicast is unavailable, the discovery screen reports it while
+RTSP scanning continues; check Privacy & Security → Local Network and rescan.
+
+Saving appends only selected cameras and opens the updated wall. Existing entries and TOML
+comments are preserved, duplicate endpoints are skipped, and the file is replaced atomically.
+The destination defaults to `~/.config/camcam/config.toml`, including when it is a symlink.
+
 ## Configuration
 
 Copy [config.example.toml](config.example.toml) to `~/.config/camcam/config.toml`, edit the
@@ -117,6 +149,9 @@ The live suite checks Media1/Media2 profile selection, WS-Security and HTTP Dige
 repeated H.264/HEVC joins through VideoToolbox, native Metal plane import, rendered color
 bars, four concurrent feeds, focus promotion to the main stream, Esc returning to the
 wall, automatic recovery after a publisher restart, and cancellation during backoff.
+It also checks multicast ONVIF discovery, RTSP stream-path detection, previews of discovered
+cameras, checkbox/save interaction, and reloading the saved config. Ordinary tests cover
+comment preservation, symlinks, inline camera arrays, duplicate saves, and concurrent saves.
 The UI tests send pointer and keyboard events through egui and render the normal
 application paint callbacks into GPU textures. Wall and focus captures are saved under
 `target/verification/`.

@@ -3,27 +3,39 @@ use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let path = match args.as_slice() {
-        [] => Config::default_path()?,
-        [help] if help == "--help" || help == "-h" => {
-            println!("Usage: camcam [--config PATH]");
-            return Ok(());
-        }
-        [option, path] if option == "--config" => {
-            if let Some(path) = path.strip_prefix("~/") {
-                PathBuf::from(
-                    std::env::var_os("HOME")
-                        .ok_or_else(|| anyhow::anyhow!("HOME is unavailable"))?,
-                )
-                .join(path)
-            } else {
-                PathBuf::from(path)
+    let mut path = None;
+    let mut discover = false;
+    let mut arguments = args.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--discover" => discover = true,
+            "--config" => {
+                let Some(value) = arguments.next().filter(|value| !value.starts_with("--")) else {
+                    usage_error()
+                };
+                path = Some(if let Some(relative) = value.strip_prefix("~/") {
+                    PathBuf::from(
+                        std::env::var_os("HOME")
+                            .ok_or_else(|| anyhow::anyhow!("HOME is unavailable"))?,
+                    )
+                    .join(relative)
+                } else {
+                    PathBuf::from(value)
+                });
             }
+            "--help" | "-h" => {
+                println!("Usage: camcam [--discover] [--config PATH]");
+                println!(
+                    "  --discover  Find local ONVIF/RTSP cameras, preview, and save selected cameras."
+                );
+                return Ok(());
+            }
+            _ => usage_error(),
         }
-        _ => {
-            eprintln!("Usage: camcam [--config PATH]");
-            std::process::exit(2);
-        }
+    }
+    let path = match path {
+        Some(path) => path,
+        None => Config::default_path()?,
     };
     let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     setup.instance_descriptor.backends = wgpu::Backends::METAL;
@@ -47,7 +59,19 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "CamCam",
         options,
-        Box::new(move |context| Ok(Box::new(App::new(context, &path)?))),
+        Box::new(move |context| {
+            let app = if discover {
+                App::discover(context, &path)?
+            } else {
+                App::new(context, &path)?
+            };
+            Ok(Box::new(app))
+        }),
     )
     .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn usage_error() -> ! {
+    eprintln!("Usage: camcam [--discover] [--config PATH]");
+    std::process::exit(2);
 }

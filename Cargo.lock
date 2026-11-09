@@ -595,7 +595,10 @@ dependencies = [
  "roxmltree",
  "serde",
  "sha1",
+ "socket2",
+ "tempfile",
  "toml",
+ "toml_edit 0.22.27",
  "url",
  "wgpu",
 ]

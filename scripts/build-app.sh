@@ -47,6 +47,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSLocalNetworkUsageDescription</key><string>CamCam discovers local ONVIF and RTSP cameras and previews their video.</string>
 </dict></plist>
 PLIST
 codesign --force --sign - "$bundle"

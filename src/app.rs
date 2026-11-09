@@ -1,5 +1,6 @@
 use crate::{
     config::{Camera, Config},
+    discover_ui::DiscoveryUi,
     render::{VideoCallback, VideoRenderer},
     stream::{Player, Source, Status},
 };
@@ -17,10 +18,24 @@ pub struct App {
     selected: Option<usize>,
     empty_message: Option<String>,
     render_state: egui_wgpu::RenderState,
+    discovery: Option<DiscoveryUi>,
+    config_path: std::path::PathBuf,
 }
 
 impl App {
     pub fn new(context: &eframe::CreationContext<'_>, path: &Path) -> anyhow::Result<Self> {
+        Self::create(context, path, false)
+    }
+
+    pub fn discover(context: &eframe::CreationContext<'_>, path: &Path) -> anyhow::Result<Self> {
+        Self::create(context, path, true)
+    }
+
+    fn create(
+        context: &eframe::CreationContext<'_>,
+        path: &Path,
+        discover: bool,
+    ) -> anyhow::Result<Self> {
         let state = context
             .wgpu_render_state
             .as_ref()
@@ -29,17 +44,21 @@ impl App {
         let renderer = VideoRenderer::new(&state.device, state.target_format)?;
         state.renderer.write().callback_resources.insert(renderer);
         context.egui_ctx.set_visuals(egui::Visuals::dark());
-        let (cameras, empty_message) = match Config::load(path) {
-            Ok(config) => (config.cameras, None),
-            Err(_) => {
-                eprintln!("CamCam: could not load camera configuration");
-                (
-                    Vec::new(),
-                    Some(format!(
-                        "Could not read camera configuration.\n{}",
-                        path.display()
-                    )),
-                )
+        let (cameras, empty_message) = if discover {
+            (Vec::new(), None)
+        } else {
+            match Config::load(path) {
+                Ok(config) => (config.cameras, None),
+                Err(_) => {
+                    eprintln!("CamCam: could not load camera configuration");
+                    (
+                        Vec::new(),
+                        Some(format!(
+                            "Could not read camera configuration.\n{}",
+                            path.display()
+                        )),
+                    )
+                }
             }
         };
         let feeds = cameras
@@ -51,6 +70,8 @@ impl App {
             selected: None,
             empty_message,
             render_state: state,
+            discovery: discover.then(|| DiscoveryUi::new(path, &context.egui_ctx)),
+            config_path: path.to_owned(),
         })
     }
 
@@ -76,11 +97,35 @@ impl App {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
-        if context.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.select(None);
-        }
         if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Q)) {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if let Some(discovery) = &mut self.discovery {
+            let saved = egui::Frame::new()
+                .inner_margin(18.0)
+                .show(ui, |ui| discovery.show(ui, &self.render_state))
+                .inner;
+            if saved {
+                self.discovery = None;
+                match Config::load(&self.config_path) {
+                    Ok(config) => {
+                        self.feeds = config
+                            .cameras
+                            .into_iter()
+                            .map(|camera| Self::feed(camera, &context))
+                            .collect();
+                        self.empty_message = None;
+                    }
+                    Err(_) => {
+                        self.empty_message = Some("Could not reload camera configuration.".into())
+                    }
+                }
+                context.request_repaint();
+            }
+            return;
+        }
+        if context.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.select(None);
         }
         if let Some(index) = self.selected {
             let feed = &mut self.feeds[index];
@@ -262,6 +307,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        if let Some(discovery) = self.discovery.take() {
+            discovery.shutdown();
+        }
         // Signal all workers first, then join. No UI-thread join during focus switching.
         for feed in &self.feeds {
             feed.wall.stop();
@@ -321,22 +369,32 @@ fn fit(rect: Rect, aspect: f32) -> Rect {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::render::tests::{gpu, readback};
     use std::time::{Duration, Instant};
 
     fn pass(app: &mut App, context: &egui::Context, events: Vec<egui::Event>, image: Option<&str>) {
+        let state = app.render_state.clone();
+        paint(context, &state, events, image, |ui| app.show(ui));
+    }
+
+    pub(crate) fn paint(
+        context: &egui::Context,
+        state: &egui_wgpu::RenderState,
+        events: Vec<egui::Event>,
+        image: Option<&str>,
+        mut show: impl FnMut(&mut egui::Ui),
+    ) {
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 640.0))),
                 events,
                 ..Default::default()
             },
-            |ui| app.show(ui),
+            |ui| show(ui),
         );
         let jobs = context.tessellate(output.shapes, output.pixels_per_point);
-        let state = &app.render_state;
         let mut renderer = state.renderer.write();
         for (id, deltas) in &output.textures_delta.set {
             for delta in deltas {
