@@ -3,7 +3,7 @@
 use crate::config::{Camera, Config, Kind};
 use anyhow::{Context, Result, ensure};
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     os::{
@@ -12,7 +12,7 @@ use std::{
     },
     path::Path,
 };
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use url::Url;
 
 pub fn identity(camera: &Camera) -> String {
@@ -73,28 +73,75 @@ pub fn append(path: &Path, cameras: &[Camera]) -> Result<usize> {
     let mut document = original
         .parse::<DocumentMut>()
         .map_err(|_| anyhow::anyhow!("Existing config is invalid; fix it before saving cameras"))?;
-    let mut known = HashSet::new();
+    let mut known = HashMap::new();
+    let mut count = 0;
     if document.contains_key("cameras") {
         let config: Config = toml::from_str(&original)
             .map_err(|_| anyhow::anyhow!("Existing camera configuration is invalid"))?;
-        known.extend(config.cameras.iter().map(identity));
+        count = config.cameras.len();
+        for (index, camera) in config.cameras.into_iter().enumerate() {
+            known.entry(identity(&camera)).or_insert((index, camera));
+        }
     } else {
         document["cameras"] = Item::ArrayOfTables(ArrayOfTables::new());
     }
-    let mut added = 0;
+    let mut pending = crate::passwords::Pending::default();
+    let mut changed = 0;
     for camera in cameras {
-        if !known.insert(identity(camera)) {
+        let id = identity(camera);
+        let existing = known.get(&id);
+        if existing.is_some_and(|(_, previous)| same_settings(previous, camera)) {
             continue;
         }
-        let table = camera_table(camera);
-        match &mut document["cameras"] {
-            Item::ArrayOfTables(entries) => entries.push(table),
-            Item::Value(Value::Array(entries)) => entries.push(table.into_inline_table()),
-            _ => anyhow::bail!("Existing cameras must be an array"),
+        let mut stored = camera.clone();
+        if let Some(password) = stored.session_password.take() {
+            stored.password_keychain = Some(pending.store(&password)?);
+            stored.password_env = None;
         }
-        added += 1;
+        let table = camera_table(&stored);
+        let index = if let Some((index, _)) = existing {
+            let previous: &mut dyn TableLike = match &mut document["cameras"] {
+                Item::ArrayOfTables(entries) => {
+                    entries.get_mut(*index).context("Missing camera entry")?
+                }
+                Item::Value(Value::Array(entries)) => entries
+                    .get_mut(*index)
+                    .and_then(Value::as_inline_table_mut)
+                    .context("Invalid inline camera entry")?,
+                _ => anyhow::bail!("Existing cameras must be an array"),
+            };
+            for key in ["name", "username", "password_env", "password_keychain"] {
+                match table.get(key) {
+                    Some(value) if previous.get(key).and_then(Item::as_str) != value.as_str() => {
+                        let mut value = value.clone();
+                        if let Some(old) = previous.get(key).and_then(Item::as_value)
+                            && let Some(new) = value.as_value_mut()
+                        {
+                            *new.decor_mut() = old.decor().clone();
+                        }
+                        previous.insert(key, value);
+                    }
+                    None => {
+                        previous.remove(key);
+                    }
+                    _ => {}
+                }
+            }
+            *index
+        } else {
+            match &mut document["cameras"] {
+                Item::ArrayOfTables(entries) => entries.push(table),
+                Item::Value(Value::Array(entries)) => entries.push(table.into_inline_table()),
+                _ => anyhow::bail!("Existing cameras must be an array"),
+            }
+            let index = count;
+            count += 1;
+            index
+        };
+        known.insert(id, (index, stored));
+        changed += 1;
     }
-    if added == 0 {
+    if changed == 0 {
         return Ok(0);
     }
     let output = document.to_string();
@@ -122,7 +169,25 @@ pub fn append(path: &Path, cameras: &[Camera]) -> Result<usize> {
         .persist(&target)
         .map_err(|e| e.error)
         .context("Could not replace camera configuration")?;
-    Ok(added)
+    pending.commit();
+    Ok(changed)
+}
+
+fn same_settings(previous: &Camera, camera: &Camera) -> bool {
+    if previous.name != camera.name || previous.username != camera.username {
+        return false;
+    }
+    if let Some(password) = &camera.session_password {
+        return previous.password_env.is_none()
+            && previous.password_keychain.is_some()
+            && previous
+                .endpoint()
+                .ok()
+                .and_then(|(_, credentials)| credentials)
+                .is_some_and(|credentials| credentials.password == *password);
+    }
+    previous.password_env == camera.password_env
+        && previous.password_keychain == camera.password_keychain
 }
 
 fn camera_table(camera: &Camera) -> Table {
@@ -140,6 +205,9 @@ fn camera_table(camera: &Camera) -> Table {
     if let Some(variable) = &camera.password_env {
         table["password_env"] = toml_edit::value(variable);
     }
+    if let Some(account) = &camera.password_keychain {
+        table["password_keychain"] = toml_edit::value(account);
+    }
     table
 }
 
@@ -154,6 +222,76 @@ mod tests {
             url: "rtsp://192.168.1.40/stream1".into(),
             username: None,
             password_env: None,
+            password_keychain: None,
+            session_password: None,
+        }
+    }
+
+    #[test]
+    fn updating_a_selected_endpoint_preserves_other_duplicate_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "[[cameras]]\nname='Front door'\ntype='rtsp'\nurl='rtsp://192.168.1.40/stream1'\n[[cameras]]\nname='Other view'\ntype='rtsp'\nurl='rtsp://192.168.1.40/stream1'\n").unwrap();
+        let mut selected = camera();
+        selected.username = Some("viewer".into());
+        assert_eq!(append(&path, &[selected]).unwrap(), 1);
+        let saved = Config::load(&path).unwrap();
+        assert_eq!(saved.cameras.len(), 2);
+        assert_eq!(saved.cameras[0].username.as_deref(), Some("viewer"));
+        assert_eq!(saved.cameras[1].name, "Other view");
+        assert!(saved.cameras[1].username.is_none());
+    }
+
+    #[test]
+    #[ignore = "requires access to the macOS login Keychain"]
+    fn replaces_mistaken_environment_credentials_and_reloads_keychain_passwords() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, source) in [
+            (
+                "table",
+                "# Keep comment\n[[cameras]]\nname='Front door' # keep name comment\ntype='rtsp'\nurl='rtsp://192.168.1.40/stream1'\nusername='viewer'\npassword_env='mistaken-literal-password'\n",
+            ),
+            (
+                "inline",
+                "# Keep comment\ncameras=[{name='Front door',type='rtsp',url='rtsp://192.168.1.40/stream1',username='viewer',password_env='mistaken-literal-password'}]\n",
+            ),
+        ] {
+            let path = directory.path().join(name);
+            std::fs::write(&path, source).unwrap();
+            let mut camera = camera();
+            camera.username = Some("viewer".into());
+            camera.session_password = Some("dummy typed password".into());
+            assert_eq!(append(&path, &[camera.clone()]).unwrap(), 1);
+            let config = Config::load(&path).unwrap();
+            assert_eq!(config.cameras.len(), 1);
+            let saved = &config.cameras[0];
+            assert!(saved.password_env.is_none());
+            let account = saved.password_keychain.as_deref().unwrap();
+            assert_eq!(
+                saved.endpoint().unwrap().1.unwrap().password,
+                "dummy typed password"
+            );
+            assert_eq!(append(&path, &[camera.clone()]).unwrap(), 0);
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(content.contains("# Keep comment"));
+            assert!(!content.contains("dummy typed password"));
+            assert!(!content.contains("mistaken-literal-password"));
+            if name == "table" {
+                assert!(content.contains("# keep name comment"));
+            }
+
+            camera.session_password = Some("replacement password".into());
+            assert_eq!(append(&path, &[camera]).unwrap(), 1);
+            let updated = Config::load(&path).unwrap();
+            assert_eq!(updated.cameras.len(), 1);
+            assert_eq!(
+                updated.cameras[0].endpoint().unwrap().1.unwrap().password,
+                "replacement password"
+            );
+            crate::passwords::remove_fixture(
+                updated.cameras[0].password_keychain.as_deref().unwrap(),
+            );
+            crate::passwords::remove_fixture(account);
         }
     }
 

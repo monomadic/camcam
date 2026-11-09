@@ -237,6 +237,8 @@ mod tests {
                 url: "rtsp://127.0.0.1:18554/recovery".into(),
                 username: None,
                 password_env: None,
+                password_keychain: None,
+                session_password: None,
             }),
             || {},
         );

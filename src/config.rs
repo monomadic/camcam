@@ -16,6 +16,10 @@ pub struct Camera {
     pub url: String,
     pub username: Option<String>,
     pub password_env: Option<String>,
+    pub password_keychain: Option<String>,
+    /// A password entered in the UI. Persisted only through the Keychain reference above.
+    #[serde(skip)]
+    pub session_password: Option<String>,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Debug)]
@@ -65,15 +69,20 @@ impl Camera {
         if !valid_scheme || url.host_str().is_none() {
             bail!("Invalid {:?} camera URL", self.kind);
         }
-        let password = self
-            .password_env
-            .as_ref()
-            .map(|key| {
-                std::env::var(key)
-                    .map_err(|_| anyhow::anyhow!("Missing password environment variable"))
-            })
-            .transpose()?
-            .unwrap_or_default();
+        if self.session_password.is_some() && self.username.as_deref().is_none_or(str::is_empty) {
+            bail!("Enter a username with the password");
+        }
+        let password = if let Some(password) = &self.session_password {
+            password.clone()
+        } else if let Some(variable) = &self.password_env {
+            std::env::var(variable).map_err(|_| anyhow::anyhow!(
+                "Password environment variable is not set. Choose Password to enter it directly."
+            ))?
+        } else if let Some(account) = &self.password_keychain {
+            crate::passwords::load(account)?
+        } else {
+            String::new()
+        };
         let credentials = self.username.as_ref().map(|user| Credentials {
             user: user.clone(),
             password,
@@ -107,13 +116,19 @@ mod tests {
             url: "rtmp://127.0.0.1/live".into(),
             username: None,
             password_env: None,
+            password_keychain: None,
+            session_password: None,
         };
         assert!(camera.endpoint().is_err());
         camera.kind = Kind::Rtsp;
         camera.url = "rtsp://127.0.0.1/live".into();
         camera.password_env = Some("CAMCAM_TEST_UNSET_08DFD9".into());
         let error = camera.endpoint().err().expect("missing password");
-        assert_eq!(error.to_string(), "Missing password environment variable");
+        assert!(error.to_string().contains("Choose Password"));
+        camera.username = Some("viewer".into());
+        camera.session_password = Some(" literal camera password ".into());
+        let (_, credentials) = camera.endpoint().unwrap();
+        assert_eq!(credentials.unwrap().password, " literal camera password ");
     }
 
     #[test]

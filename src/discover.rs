@@ -401,6 +401,8 @@ fn probe_matches(
                     url: url.to_string(),
                     username: None,
                     password_env: None,
+                    password_keychain: None,
+                    session_password: None,
                 },
                 note: "ONVIF device found".into(),
             })
@@ -511,6 +513,8 @@ fn probe_rtsp(address: SocketAddrV4, stop: &AtomicBool) -> Option<Candidate> {
             url: format!("rtsp://{address}{path}"),
             username: None,
             password_env: None,
+            password_keychain: None,
+            session_password: None,
         },
         note: note.into(),
     })

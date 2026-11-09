@@ -58,9 +58,11 @@ open .build/CamCam.app --args --discover
 
 Discovery opens a separate screen and scans the selected local IPv4 interface. Choose the
 interface and scan range, click a camera to preview it, then tick the cameras to add and
-choose **Save selected and open wall**. Names, addresses, usernames, and password variable
-names can be edited before previewing or saving. Export password variables before launching
-CamCam, using the same credentials format as the normal camera wall.
+choose **Save selected and open wall**. Names, addresses, and credentials can be edited
+before previewing or saving. Enter the camera's password in the masked
+**Password** field. Direct passwords are saved in macOS Keychain when the camera is saved.
+For existing environment-based setups, select **Use password environment variable** and
+enter the name of a variable exported before launching CamCam.
 
 ONVIF cameras are found using WS-Discovery multicast probes. RTSP discovery checks ports
 554, 8554, and 10554 and tries a short list of common stream paths. An RTSP service can be
@@ -74,8 +76,10 @@ The bundled app includes a Local Network usage description for macOS. Allow loca
 access when prompted. If multicast is unavailable, the discovery screen reports it while
 RTSP scanning continues; check Privacy & Security → Local Network and rescan.
 
-Saving appends only selected cameras and opens the updated wall. Existing entries and TOML
-comments are preserved, duplicate endpoints are skipped, and the file is replaced atomically.
+Saving adds selected cameras and opens the updated wall. Selecting an existing camera with
+edited credentials updates that entry, including replacing a mistaken password-variable
+setting. Unchanged endpoints are skipped, TOML comments are preserved, and the file is
+replaced atomically. If saving fails, newly created Keychain entries are rolled back.
 The destination defaults to `~/.config/camcam/config.toml`, including when it is a symlink.
 
 ## Configuration
@@ -94,7 +98,9 @@ cargo run --release
 Use `camcam --config /path/to/config.toml` to choose another file. Password variables must
 be available to the launched process. For a Finder app launched from a shell,
 `open --env CAMCAM_FRONT_DOOR_PASSWORD=... .build/CamCam.app` passes the variable explicitly.
-Each camera may use `username` and `password_env`. Existing stream URL credentials take precedence.
+Each camera may use `username` and `password_env`. Cameras saved with a direct password use
+an opaque `password_keychain` reference instead. CamCam resolves that reference on launch.
+The password itself is kept in Keychain. Existing stream URL credentials take precedence.
 
 ONVIF entries take a device-service URL, typically `http://camera/onvif/device_service`.
 CamCam reads services, profiles, and stream URIs, with a GetCapabilities fallback for
@@ -152,6 +158,8 @@ wall, automatic recovery after a publisher restart, and cancellation during back
 It also checks multicast ONVIF discovery, RTSP stream-path detection, previews of discovered
 cameras, checkbox/save interaction, and reloading the saved config. Ordinary tests cover
 comment preservation, symlinks, inline camera arrays, duplicate saves, and concurrent saves.
+Credential regressions cover direct-password preview, Keychain round trips, correcting
+existing entries, and rollback of uncommitted Keychain entries.
 The UI tests send pointer and keyboard events through egui and render the normal
 application paint callbacks into GPU textures. Wall and focus captures are saved under
 `target/verification/`.

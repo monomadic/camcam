@@ -12,3 +12,5 @@ pub mod config_save;
 pub mod discover;
 
 pub mod discover_ui;
+
+pub mod passwords;

@@ -16,6 +16,8 @@ struct Draft {
     camera: Camera,
     username: String,
     password_env: String,
+    password: String,
+    use_environment: bool,
     note: String,
     checked: bool,
 }
@@ -26,6 +28,8 @@ impl Draft {
             id: config_save::identity(&candidate.camera),
             username: candidate.camera.username.clone().unwrap_or_default(),
             password_env: candidate.camera.password_env.clone().unwrap_or_default(),
+            password: String::new(),
+            use_environment: candidate.camera.password_env.is_some(),
             camera: candidate.camera,
             note: candidate.note,
             checked: false,
@@ -36,8 +40,18 @@ impl Draft {
         let mut camera = self.camera.clone();
         camera.username =
             (!self.username.trim().is_empty()).then(|| self.username.trim().to_owned());
-        camera.password_env =
-            (!self.password_env.trim().is_empty()).then(|| self.password_env.trim().to_owned());
+        if self.use_environment {
+            camera.password_env =
+                (!self.password_env.trim().is_empty()).then(|| self.password_env.trim().to_owned());
+            camera.password_keychain = None;
+            camera.session_password = None;
+        } else {
+            camera.password_env = None;
+            camera.session_password = (!self.password.is_empty()).then(|| self.password.clone());
+            if camera.session_password.is_some() {
+                camera.password_keychain = None;
+            }
+        }
         camera
     }
 }
@@ -280,11 +294,37 @@ impl DiscoveryUi {
                     ui.label("Username");
                     edited |= ui.text_edit_singleline(&mut draft.username).changed();
                     ui.end_row();
-                    ui.label("Password variable");
-                    edited |= ui.text_edit_singleline(&mut draft.password_env).changed();
+                    if draft.use_environment {
+                        ui.label("Password variable");
+                        edited |= ui.text_edit_singleline(&mut draft.password_env).changed();
+                    } else {
+                        ui.label("Password");
+                        let hint = if draft.camera.password_keychain.is_some() {
+                            "Saved in Keychain; enter to replace"
+                        } else {
+                            "Camera password"
+                        };
+                        edited |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut draft.password)
+                                    .password(true)
+                                    .hint_text(hint),
+                            )
+                            .changed();
+                    }
                     ui.end_row();
                 });
-            ui.small("Use a password environment variable, as in config.toml. Leave credentials blank for open feeds.");
+            edited |= ui
+                .checkbox(
+                    &mut draft.use_environment,
+                    "Use password environment variable",
+                )
+                .changed();
+            if draft.use_environment {
+                ui.small("Enter a variable name exported before launching CamCam.");
+            } else {
+                ui.small("Passwords are saved in macOS Keychain when you save the camera.");
+            }
             if ui.button("Preview").clicked() {
                 preview = Some(index);
             }
@@ -305,9 +345,8 @@ impl DiscoveryUi {
                 {
                     ui.colored_label(Color32::YELLOW, error);
                 }
-                let (rect, _) = ui.allocate_exact_size(
-                    ui.available_size().max(Vec2::splat(1.0)), Sense::hover(),
-                );
+                let (rect, _) = ui
+                    .allocate_exact_size(ui.available_size().max(Vec2::splat(1.0)), Sense::hover());
                 ui.painter().rect_filled(rect, 4, Color32::BLACK);
                 if let Some(frame) = frame {
                     let aspect = frame.width as f32 / frame.height as f32;
@@ -317,7 +356,8 @@ impl DiscoveryUi {
                     );
                     let rect = Rect::from_center_size(rect.center(), size);
                     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                        rect, VideoCallback { id: 0, frame },
+                        rect,
+                        VideoCallback { id: 0, frame },
                     ));
                 }
             } else {
@@ -424,7 +464,9 @@ mod tests {
                 .unwrap();
             if kind == crate::config::Kind::Onvif {
                 discovery.drafts[index].username = "viewer".into();
-                discovery.drafts[index].password_env = "CAMCAM_FIXTURE_PASSWORD".into();
+                discovery.drafts[index].password = "fixture-password".into();
+                // Reproduce entering a literal into the old environment-variable field.
+                discovery.drafts[index].password_env = "this-is-a-password-not-an-env-name".into();
             }
             discovery.start_preview(index, &context);
             wait_until(|| {
@@ -505,9 +547,19 @@ mod tests {
         let saved = Config::load(&path).unwrap();
         assert_eq!(saved.cameras.len(), 2);
         assert_eq!(saved.cameras[0].name, "Existing");
+        assert!(saved.cameras[1].password_env.is_none());
+        let account = saved.cameras[1]
+            .password_keychain
+            .clone()
+            .expect("saved password reference");
         assert_eq!(
-            saved.cameras[1].password_env.as_deref(),
-            Some("CAMCAM_FIXTURE_PASSWORD")
+            saved.cameras[1].endpoint().unwrap().1.unwrap().password,
+            "fixture-password"
+        );
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("fixture-password")
         );
         assert!(
             std::fs::read_to_string(&path)
@@ -524,5 +576,6 @@ mod tests {
         let mut app = App::new(&creation, &path).unwrap();
         paint(&context, &state, Vec::new(), None, |ui| app.show(ui));
         eframe::App::on_exit(&mut app);
+        crate::passwords::remove_fixture(&account);
     }
 }
