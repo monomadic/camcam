@@ -13,4 +13,5 @@ pub mod discover;
 
 pub mod discover_ui;
 
+pub mod menu;
 pub mod passwords;

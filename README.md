@@ -56,7 +56,11 @@ cargo run --release -- --discover --config /path/to/config.toml
 open .build/CamCam.app --args --discover
 ```
 
-Discovery opens a separate screen and scans the selected local IPv4 interface. Choose the
+Choose **Tools → Scan…** in the macOS menu bar to open the scanner from the camera wall.
+**Back to wall** (or Escape) closes it without saving. The `--discover` option opens the same
+scanner at startup.
+
+Discovery scans the selected local IPv4 interface. Choose the
 interface and scan range, click a camera to preview it, then tick the cameras to add and
 choose **Save selected and open wall**. Names, addresses, and credentials can be edited
 before previewing or saving. Enter the camera's password in the masked

@@ -60,11 +60,12 @@ fn main() -> anyhow::Result<()> {
         "CamCam",
         options,
         Box::new(move |context| {
-            let app = if discover {
+            let mut app = if discover {
                 App::discover(context, &path)?
             } else {
                 App::new(context, &path)?
             };
+            app.install_menu(&context.egui_ctx)?;
             Ok(Box::new(app))
         }),
     )

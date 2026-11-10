@@ -20,6 +20,7 @@ pub struct App {
     render_state: egui_wgpu::RenderState,
     discovery: Option<DiscoveryUi>,
     config_path: std::path::PathBuf,
+    menu: Option<crate::menu::NativeMenu>,
 }
 
 impl App {
@@ -44,21 +45,17 @@ impl App {
         let renderer = VideoRenderer::new(&state.device, state.target_format)?;
         state.renderer.write().callback_resources.insert(renderer);
         context.egui_ctx.set_visuals(egui::Visuals::dark());
-        let (cameras, empty_message) = if discover {
-            (Vec::new(), None)
-        } else {
-            match Config::load(path) {
-                Ok(config) => (config.cameras, None),
-                Err(_) => {
-                    eprintln!("CamCam: could not load camera configuration");
-                    (
-                        Vec::new(),
-                        Some(format!(
-                            "Could not read camera configuration.\n{}",
-                            path.display()
-                        )),
-                    )
-                }
+        let (cameras, empty_message) = match Config::load(path) {
+            Ok(config) => (config.cameras, None),
+            Err(_) => {
+                eprintln!("CamCam: could not load camera configuration");
+                (
+                    Vec::new(),
+                    Some(format!(
+                        "Could not read camera configuration.\n{}",
+                        path.display()
+                    )),
+                )
             }
         };
         let feeds = cameras
@@ -72,7 +69,19 @@ impl App {
             render_state: state,
             discovery: discover.then(|| DiscoveryUi::new(path, &context.egui_ctx)),
             config_path: path.to_owned(),
+            menu: None,
         })
+    }
+
+    pub fn install_menu(&mut self, context: &egui::Context) -> anyhow::Result<()> {
+        self.menu = Some(crate::menu::NativeMenu::new(context)?);
+        Ok(())
+    }
+
+    fn open_scanner(&mut self, context: &egui::Context) {
+        if self.discovery.is_none() {
+            self.discovery = Some(DiscoveryUi::new(&self.config_path, context));
+        }
     }
 
     fn feed(camera: Camera, context: &egui::Context) -> CameraFeed {
@@ -97,8 +106,20 @@ impl App {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
+        if self.menu.as_ref().is_some_and(|menu| menu.take_scan()) {
+            self.open_scanner(&context);
+        }
         if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Q)) {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if self.discovery.is_some()
+            && (ui.button("← Back to wall").clicked()
+                || context.input(|i| i.key_pressed(egui::Key::Escape)))
+        {
+            if let Some(discovery) = self.discovery.take() {
+                discovery.shutdown();
+            }
+            context.request_repaint();
         }
         if let Some(discovery) = &mut self.discovery {
             let saved = egui::Frame::new()
@@ -106,6 +127,7 @@ impl App {
                 .show(ui, |ui| discovery.show(ui, &self.render_state))
                 .inner;
             if saved {
+                self.select(None);
                 self.discovery = None;
                 match Config::load(&self.config_path) {
                     Ok(config) => {
@@ -174,7 +196,7 @@ impl App {
             let message = self
                 .empty_message
                 .as_deref()
-                .unwrap_or("Add cameras to ~/.config/camcam/config.toml and relaunch.");
+                .unwrap_or("Choose Tools → Scan… to find cameras, or add them to ~/.config/camcam/config.toml.");
             painter.text(
                 content.center(),
                 Align2::CENTER_CENTER,
