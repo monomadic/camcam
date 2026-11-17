@@ -86,6 +86,22 @@ setting. Unchanged endpoints are skipped, TOML comments are preserved, and the f
 replaced atomically. If saving fails, newly created Keychain entries are rolled back.
 The destination defaults to `~/.config/camcam/config.toml`, including when it is a symlink.
 
+## Automatic reconnection
+
+CamCam learns a persistent identity after a camera plays and saves it as `discovery_id`.
+ONVIF cameras use their manufacturer, model, and serial number. RTSP cameras advertising
+Bonjour through `_hap._tcp` or `_rtsp._tcp` use their service instance, including the Eufy
+camera tested here.
+
+When a connection fails, CamCam searches connected IPv4 networks for the same camera,
+reconnects, and updates that entry's URL in `config.toml`. It keeps the existing port,
+stream path, credentials, and comments. Searches run on background workers and repeat
+at most once every 30 seconds. Ambiguous matches are left for a later retry.
+
+A camera must play once at a correct address to learn its identity. RTSP cameras without
+a supported Bonjour advertisement keep retrying their saved address. ONVIF scans cover
+local networks of up to 4096 addresses and require the ONVIF port to stay the same.
+
 ## Configuration
 
 Copy [config.example.toml](config.example.toml) to `~/.config/camcam/config.toml`, edit the

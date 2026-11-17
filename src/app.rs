@@ -60,7 +60,7 @@ impl App {
         };
         let feeds = cameras
             .into_iter()
-            .map(|camera| Self::feed(camera, &context.egui_ctx))
+            .map(|camera| Self::feed(camera, &context.egui_ctx, path))
             .collect();
         Ok(Self {
             feeds,
@@ -84,12 +84,12 @@ impl App {
         }
     }
 
-    fn feed(camera: Camera, context: &egui::Context) -> CameraFeed {
+    fn feed(camera: Camera, context: &egui::Context, path: &Path) -> CameraFeed {
         let name = camera.name.clone();
         let context = context.clone();
         CameraFeed {
             name,
-            wall: Player::new(Source::Camera(camera), move || context.request_repaint()),
+            wall: Player::saved(camera, path, move || context.request_repaint()),
             focus: None,
         }
     }
@@ -134,7 +134,7 @@ impl App {
                         self.feeds = config
                             .cameras
                             .into_iter()
-                            .map(|camera| Self::feed(camera, &context))
+                            .map(|camera| Self::feed(camera, &context, &self.config_path))
                             .collect();
                         self.empty_message = None;
                     }
@@ -151,6 +151,9 @@ impl App {
         }
         if let Some(index) = self.selected {
             let feed = &mut self.feeds[index];
+            if feed.wall.read(|s| s.streams.is_none()) {
+                feed.focus = None;
+            }
             if feed.focus.is_none()
                 && let Some(url) = feed
                     .wall
@@ -513,7 +516,10 @@ pub(crate) mod tests {
         let context = egui::Context::default();
         let mut creation = eframe::CreationContext::_new_kittest(context.clone());
         creation.wgpu_render_state = Some(gpu());
-        let mut app = App::new(&creation, Path::new("tests/fixtures/wall.toml")).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+        std::fs::copy("tests/fixtures/wall.toml", &config_path).unwrap();
+        let mut app = App::new(&creation, &config_path).unwrap();
         assert_eq!(app.feeds.len(), 4);
         wait_until(|| {
             app.feeds

@@ -66,7 +66,7 @@ impl Subnet {
         format!("{}/{}", self.base(), self.prefix)
     }
 
-    fn hosts(self) -> Result<Vec<Ipv4Addr>> {
+    pub(crate) fn hosts(self) -> Result<Vec<Ipv4Addr>> {
         let size = 1u64 << (32 - self.prefix);
         ensure!(
             size <= 4096,
@@ -401,6 +401,7 @@ fn probe_matches(
                     url: url.to_string(),
                     username: None,
                     password_env: None,
+                    discovery_id: None,
                     password_keychain: None,
                     session_password: None,
                 },
@@ -513,6 +514,7 @@ fn probe_rtsp(address: SocketAddrV4, stop: &AtomicBool) -> Option<Candidate> {
             url: format!("rtsp://{address}{path}"),
             username: None,
             password_env: None,
+            discovery_id: None,
             password_keychain: None,
             session_password: None,
         },

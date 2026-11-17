@@ -35,6 +35,14 @@ pub fn identity(camera: &Camera) -> String {
 }
 
 pub fn append(path: &Path, cameras: &[Camera]) -> Result<usize> {
+    save(path, cameras, None)
+}
+
+pub fn update_location(path: &Path, previous: &Camera, updated: &Camera) -> Result<usize> {
+    save(path, std::slice::from_ref(updated), Some(previous))
+}
+
+fn save(path: &Path, cameras: &[Camera], previous: Option<&Camera>) -> Result<usize> {
     if cameras.is_empty() {
         return Ok(0);
     }
@@ -89,18 +97,34 @@ pub fn append(path: &Path, cameras: &[Camera]) -> Result<usize> {
     let mut changed = 0;
     for camera in cameras {
         let id = identity(camera);
-        let existing = known.get(&id);
-        if existing.is_some_and(|(_, previous)| same_settings(previous, camera)) {
+        let lookup = previous.map(identity).unwrap_or_else(|| id.clone());
+        let existing = known.get(&lookup);
+        if let Some(expected) = previous {
+            let Some((_, current)) = existing else {
+                return Ok(0);
+            };
+            if current.name != expected.name
+                || current.url != expected.url
+                || current.discovery_id != expected.discovery_id
+            {
+                return Ok(0);
+            }
+        }
+        if previous.is_none()
+            && existing.is_some_and(|(_, previous)| same_settings(previous, camera))
+        {
             continue;
         }
         let mut stored = camera.clone();
-        if let Some(password) = stored.session_password.take() {
+        if let Some(password) = stored.session_password.take()
+            && previous.is_none()
+        {
             stored.password_keychain = Some(pending.store(&password)?);
             stored.password_env = None;
         }
         let table = camera_table(&stored);
         let index = if let Some((index, _)) = existing {
-            let previous: &mut dyn TableLike = match &mut document["cameras"] {
+            let entry: &mut dyn TableLike = match &mut document["cameras"] {
                 Item::ArrayOfTables(entries) => {
                     entries.get_mut(*index).context("Missing camera entry")?
                 }
@@ -110,19 +134,30 @@ pub fn append(path: &Path, cameras: &[Camera]) -> Result<usize> {
                     .context("Invalid inline camera entry")?,
                 _ => anyhow::bail!("Existing cameras must be an array"),
             };
-            for key in ["name", "username", "password_env", "password_keychain"] {
+            let keys: &[&str] = if previous.is_some() {
+                &["url", "discovery_id"]
+            } else {
+                &[
+                    "name",
+                    "username",
+                    "password_env",
+                    "password_keychain",
+                    "discovery_id",
+                ]
+            };
+            for &key in keys {
                 match table.get(key) {
-                    Some(value) if previous.get(key).and_then(Item::as_str) != value.as_str() => {
+                    Some(value) if entry.get(key).and_then(Item::as_str) != value.as_str() => {
                         let mut value = value.clone();
-                        if let Some(old) = previous.get(key).and_then(Item::as_value)
+                        if let Some(old) = entry.get(key).and_then(Item::as_value)
                             && let Some(new) = value.as_value_mut()
                         {
                             *new.decor_mut() = old.decor().clone();
                         }
-                        previous.insert(key, value);
+                        entry.insert(key, value);
                     }
                     None => {
-                        previous.remove(key);
+                        entry.remove(key);
                     }
                     _ => {}
                 }
@@ -174,7 +209,10 @@ pub fn append(path: &Path, cameras: &[Camera]) -> Result<usize> {
 }
 
 fn same_settings(previous: &Camera, camera: &Camera) -> bool {
-    if previous.name != camera.name || previous.username != camera.username {
+    if previous.name != camera.name
+        || previous.username != camera.username
+        || previous.discovery_id != camera.discovery_id
+    {
         return false;
     }
     if let Some(password) = &camera.session_password {
@@ -205,6 +243,9 @@ fn camera_table(camera: &Camera) -> Table {
     if let Some(variable) = &camera.password_env {
         table["password_env"] = toml_edit::value(variable);
     }
+    if let Some(id) = &camera.discovery_id {
+        table["discovery_id"] = toml_edit::value(id);
+    }
     if let Some(account) = &camera.password_keychain {
         table["password_keychain"] = toml_edit::value(account);
     }
@@ -222,8 +263,41 @@ mod tests {
             url: "rtsp://192.168.1.40/stream1".into(),
             username: None,
             password_env: None,
+            discovery_id: None,
             password_keychain: None,
             session_password: None,
+        }
+    }
+
+    #[test]
+    fn relocating_updates_in_place_preserves_credentials_and_rejects_stale_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        for source in [
+            "# header\n[[cameras]]\nname='Front door'\ntype='rtsp'\nurl='rtsp://192.168.1.40/stream1' # keep address comment\nusername='viewer'\ncustom='preserve'\n",
+            "# header\ncameras=[{name='Front door',type='rtsp',url='rtsp://192.168.1.40/stream1',username='viewer',custom='preserve'}]\n",
+        ] {
+            let path = directory.path().join("config.toml");
+            std::fs::write(&path, source).unwrap();
+            let previous = Config::load(&path).unwrap().cameras.remove(0);
+            let mut learned = previous.clone();
+            learned.discovery_id = Some("onvif:CamCam|Fixture|fixture-01".into());
+            learned.session_password = Some("dummy-session-secret".into());
+            assert_eq!(update_location(&path, &previous, &learned).unwrap(), 1);
+            let mut moved = learned.clone();
+            moved.url = "rtsp://192.168.1.154/stream1".into();
+            assert_eq!(update_location(&path, &learned, &moved).unwrap(), 1);
+            assert_eq!(update_location(&path, &previous, &learned).unwrap(), 0);
+            let saved = Config::load(&path).unwrap();
+            assert_eq!(saved.cameras.len(), 1);
+            assert_eq!(saved.cameras[0].url, moved.url);
+            assert_eq!(saved.cameras[0].username.as_deref(), Some("viewer"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains("# header"));
+            assert!(!text.contains("dummy-session-secret"));
+            assert!(text.contains("custom"));
+            if source.contains("# keep address comment") {
+                assert!(text.contains("# keep address comment"));
+            }
         }
     }
 

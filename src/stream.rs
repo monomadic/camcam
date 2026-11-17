@@ -46,6 +46,22 @@ pub struct Player {
 
 impl Player {
     pub fn new(source: Source, repaint: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::start(source, None, repaint)
+    }
+
+    pub fn saved(
+        camera: Camera,
+        path: &std::path::Path,
+        repaint: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self::start(Source::Camera(camera), Some(path.to_owned()), repaint)
+    }
+
+    fn start(
+        source: Source,
+        path: Option<std::path::PathBuf>,
+        repaint: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let state = Arc::new(Mutex::new(Snapshot {
             frame: None,
             status: Status::Connecting,
@@ -58,7 +74,7 @@ impl Player {
         let wake = Arc::new((Mutex::new(()), Condvar::new()));
         let worker = {
             let (state, stop, wake) = (state.clone(), stop.clone(), wake.clone());
-            thread::spawn(move || run(source, state, stop, wake, repaint))
+            thread::spawn(move || run(source, path, state, stop, wake, repaint))
         };
         Self {
             state,
@@ -93,17 +109,33 @@ impl Drop for Player {
 }
 
 fn run(
-    source: Source,
+    mut source: Source,
+    path: Option<std::path::PathBuf>,
     state: Arc<Mutex<Snapshot>>,
     stop: Arc<AtomicBool>,
     wake: Arc<(Mutex<()>, Condvar)>,
     repaint: impl Fn(),
 ) {
     let mut backoff = 1;
+    let mut failed = false;
+    let mut last_learning: Option<Instant> = None;
+    let mut last_discovery: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
+        if failed
+            && last_discovery.is_none_or(|when| when.elapsed() >= Duration::from_secs(30))
+            && let (Source::Camera(camera), Some(path)) = (&mut source, &path)
+        {
+            crate::reconnect::relocate(camera, path, &stop);
+            last_discovery = Some(Instant::now());
+        }
         let started = Instant::now();
-        let streams = match &source {
-            Source::Camera(camera) => onvif::resolve(camera, &stop),
+        let streams = match &mut source {
+            Source::Camera(camera) => camera.endpoint().and_then(|(_, credentials)| {
+                if camera.session_password.is_none() {
+                    camera.session_password = credentials.map(|credentials| credentials.password);
+                }
+                onvif::resolve(camera, &stop)
+            }),
             Source::Direct(url) => Ok(Streams {
                 wall: url.clone(),
                 focus: None,
@@ -128,6 +160,13 @@ fn run(
                 }
                 drop(state);
                 repaint();
+                if last_learning.is_none_or(|when| when.elapsed() >= Duration::from_secs(30))
+                    && let (Source::Camera(camera), Some(path)) = (&mut source, &path)
+                    && camera.discovery_id.is_none()
+                {
+                    crate::reconnect::remember(camera, path, &stop);
+                    last_learning = Some(Instant::now());
+                }
                 true
             })
         });
@@ -138,6 +177,7 @@ fn run(
         {
             let mut state = state.lock().expect("stream state");
             state.frame = None;
+            state.streams = None;
             state.status = if direct {
                 Status::Ended
             } else {
@@ -149,6 +189,7 @@ fn run(
         if direct {
             break;
         }
+        failed = true;
         if received_frame {
             backoff = 1;
         }
@@ -237,6 +278,7 @@ mod tests {
                 url: "rtsp://127.0.0.1:18554/recovery".into(),
                 username: None,
                 password_env: None,
+                discovery_id: None,
                 password_keychain: None,
                 session_password: None,
             }),

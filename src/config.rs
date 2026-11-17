@@ -17,6 +17,7 @@ pub struct Camera {
     pub username: Option<String>,
     pub password_env: Option<String>,
     pub password_keychain: Option<String>,
+    pub discovery_id: Option<String>,
     /// A password entered in the UI. Persisted only through the Keychain reference above.
     #[serde(skip)]
     pub session_password: Option<String>,
@@ -116,6 +117,7 @@ mod tests {
             url: "rtmp://127.0.0.1/live".into(),
             username: None,
             password_env: None,
+            discovery_id: None,
             password_keychain: None,
             session_password: None,
         };

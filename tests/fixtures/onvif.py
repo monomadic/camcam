@@ -89,6 +89,8 @@ class SOAP(BaseHTTPRequestHandler):
                 f"<m:XAddr>http://127.0.0.1:18080/{path}</m:XAddr></m:Service>"
             )
             namespace = DEVICE
+        elif action == "GetDeviceInformation":
+            body = "<m:Manufacturer>CamCam</m:Manufacturer><m:Model>Fixture</m:Model><m:SerialNumber>fixture-01</m:SerialNumber>"
         elif action == "GetProfiles":
             body = profile("main", 1280, 720, namespace)
             body += profile("sub", 480, 270, namespace)

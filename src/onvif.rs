@@ -37,6 +37,39 @@ pub fn resolve(camera: &Camera, stop: &Arc<AtomicBool>) -> Result<Streams> {
     .streams()
 }
 
+/// Authenticated device identity survives DHCP address changes.
+pub fn device_id(camera: &Camera, stop: &Arc<AtomicBool>) -> Result<String> {
+    let (device, credentials) = camera.endpoint()?;
+    let response = Client {
+        device,
+        credentials,
+        stop,
+    }
+    .request(
+        &Url::parse(&camera.url)?,
+        DEVICE,
+        "GetDeviceInformation",
+        "",
+    )?;
+    let document = Document::parse(&response)?;
+    let field = |name: &str| {
+        document
+            .descendants()
+            .find(|n| named(*n, name))
+            .and_then(|n| n.text())
+            .unwrap_or("")
+            .trim()
+    };
+    let serial = field("SerialNumber");
+    ensure!(!serial.is_empty(), "ONVIF camera returned no serial number");
+    Ok(format!(
+        "onvif:{}|{}|{}",
+        field("Manufacturer"),
+        field("Model"),
+        serial
+    ))
+}
+
 struct Client<'a> {
     device: Url,
     credentials: Option<Credentials>,
@@ -365,6 +398,10 @@ mod tests {
         digest.url = "http://127.0.0.1:18080/digest".into();
         cameras.push(digest);
         for camera in &cameras {
+            assert_eq!(
+                device_id(camera, &stop).unwrap(),
+                "onvif:CamCam|Fixture|fixture-01"
+            );
             let streams = resolve(camera, &stop).unwrap();
             assert_eq!(streams.wall.path(), "/sub");
             assert_eq!(streams.focus.unwrap().path(), "/main");
