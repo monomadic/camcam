@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 
 open_after=0
 install_after=0
+icon=dark
 parse_options=1
 remaining=$#
 # Rotate Cargo arguments to the end, keeping their order and quoting intact.
@@ -18,9 +19,20 @@ while [ "$remaining" -gt 0 ]; do
   case "$argument" in
     --open) open_after=1 ;;
     --install) install_after=1 ;;
+    --icon)
+      if [ "$remaining" -eq 0 ]; then
+        printf '%s\n' 'Missing icon name after --icon' >&2
+        exit 2
+      fi
+      icon=$1
+      shift
+      remaining=$((remaining - 1))
+      ;;
+    --icon=*) icon=${argument#--icon=} ;;
     --) parse_options=0 ;;
     -h|--help)
-      printf '%s\n' 'Usage: build-app.sh [--open] [--install] [CARGO BUILD OPTIONS]' \
+      printf '%s\n' 'Usage: build-app.sh [--icon dark|frosted|clear] [--open] [--install] [CARGO BUILD OPTIONS]' \
+        '  --icon     Choose the bundled app icon (default: dark).' \
         '  --open     Launch the built app, or the installed copy with --install.' \
         '  --install  Replace /Applications/CamCam.app with the built app.' \
         '  --         Pass all following arguments to Cargo.'
@@ -30,13 +42,21 @@ while [ "$remaining" -gt 0 ]; do
   esac
 done
 
+case "$icon" in
+  dark|frosted|clear) ;;
+  *)
+    printf '%s\n' "Unknown icon '$icon' (choose dark, frosted, or clear)" >&2
+    exit 2
+    ;;
+esac
+
 cargo build --release "$@"
 binary_dir="${CARGO_TARGET_DIR:-target}/release"
 bundle="$PWD/.build/CamCam.app"
 mkdir -p "$bundle/Contents/MacOS"
 mkdir -p "$bundle/Contents/Resources"
 cp "$binary_dir/camcam" "$bundle/Contents/MacOS/camcam"
-cp assets/CamCam.icns "$bundle/Contents/Resources/CamCam.icns"
+cp "assets/icons/$icon.icns" "$bundle/Contents/Resources/CamCam.icns"
 
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

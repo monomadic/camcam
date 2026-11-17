@@ -44,6 +44,8 @@ cargo run --release
 Run `./scripts/build-app.sh` to create `.build/CamCam.app` for Finder.
 Add `--open` to launch it, `--install` to replace `/Applications/CamCam.app`, or
 `--install --open` to install and launch the installed copy. Other arguments pass to Cargo.
+Use `--icon dark`, `--icon frosted`, or `--icon clear` to choose the bundled icon.
+The dark icon is the default. The source PNGs and macOS `.icns` files are in `assets/icons/`.
 The app links to the installed Homebrew libraries. Keep those available when running it.
 
 ## Discover cameras
