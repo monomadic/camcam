@@ -357,7 +357,12 @@ impl DiscoveryUi {
                     let rect = Rect::from_center_size(rect.center(), size);
                     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                         rect,
-                        VideoCallback { id: 0, frame },
+                        VideoCallback {
+                            id: 0,
+                            frame,
+                            size: rect.size(),
+                            corner_radius: 4.0,
+                        },
                     ));
                 }
             } else {

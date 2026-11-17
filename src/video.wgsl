@@ -1,4 +1,4 @@
-struct Conversion { levels: vec4<f32>, matrix: vec4<f32> }
+struct Conversion { levels: vec4<f32>, matrix: vec4<f32>, rounding: vec4<f32> }
 @group(0) @binding(0) var luma: texture_2d<f32>;
 @group(0) @binding(1) var chroma: texture_2d<f32>;
 @group(0) @binding(2) var bilinear: sampler;
@@ -14,6 +14,15 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
     return result;
 }
 @fragment fn fragment_main(vertex: Vertex) -> @location(0) vec4<f32> {
+    var alpha = 1.0;
+    if conversion.rounding.z > 0.0 {
+        let size = conversion.rounding.xy;
+        let radius = min(conversion.rounding.z, min(size.x, size.y) * 0.5);
+        let point = vertex.uv * size;
+        let corner = abs(point - size * 0.5) - (size * 0.5 - vec2(radius));
+        let distance = length(max(corner, vec2(0.0))) + min(max(corner.x, corner.y), 0.0) - radius;
+        alpha = 1.0 - smoothstep(-0.5, 0.5, distance);
+    }
     let levels = conversion.levels;
     let y = (textureSample(luma, bilinear, vertex.uv).r - levels.x) * levels.y;
     let uv = (textureSample(chroma, bilinear, vertex.uv).rg - levels.z) * levels.w;
@@ -27,5 +36,5 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
     if conversion.matrix.z > 0.5 {
         rgb = select(pow((rgb + 0.055) / 1.055, vec3(2.4)), rgb / 12.92, rgb <= vec3(0.04045));
     }
-    return vec4(rgb, 1.0);
+    return vec4(rgb, alpha);
 }

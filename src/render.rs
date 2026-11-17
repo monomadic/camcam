@@ -51,6 +51,8 @@ impl Drop for CfObject {
 struct Picture {
     frame: Arc<VideoFrame>,
     bind_group: wgpu::BindGroup,
+    size: egui::Vec2,
+    corner_radius: f32,
 }
 
 pub struct VideoRenderer {
@@ -68,6 +70,7 @@ pub struct VideoRenderer {
 struct Conversion {
     levels: [f32; 4],
     matrix: [f32; 4],
+    rounding: [f32; 4],
 }
 
 impl VideoRenderer {
@@ -148,7 +151,7 @@ impl VideoRenderer {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: None,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -260,12 +263,12 @@ impl VideoRenderer {
         device: &wgpu::Device,
         id: usize,
         frame: Arc<VideoFrame>,
+        size: egui::Vec2,
+        corner_radius: f32,
     ) -> Result<()> {
-        if self
-            .pictures
-            .get(&id)
-            .is_some_and(|p| Arc::ptr_eq(&p.frame, &frame))
-        {
+        if self.pictures.get(&id).is_some_and(|p| {
+            Arc::ptr_eq(&p.frame, &frame) && p.size == size && p.corner_radius == corner_radius
+        }) {
             return Ok(());
         }
         let y = self.import_plane(device, &frame, 0)?;
@@ -293,6 +296,7 @@ impl VideoRenderer {
         let conversion = Conversion {
             levels,
             matrix: [kr, kb, self.format.is_srgb() as u8 as f32, 0.0],
+            rounding: [size.x, size.y, corner_radius, 0.0],
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera color"),
@@ -321,7 +325,15 @@ impl VideoRenderer {
                 },
             ],
         });
-        self.pictures.insert(id, Picture { frame, bind_group });
+        self.pictures.insert(
+            id,
+            Picture {
+                frame,
+                bind_group,
+                size,
+                corner_radius,
+            },
+        );
         self.errors.remove(&id);
         unsafe { CVMetalTextureCacheFlush(self.cache.0, 0) };
         Ok(())
@@ -344,6 +356,8 @@ impl VideoRenderer {
 pub struct VideoCallback {
     pub id: usize,
     pub frame: Arc<VideoFrame>,
+    pub size: egui::Vec2,
+    pub corner_radius: f32,
 }
 
 impl CallbackTrait for VideoCallback {
@@ -358,7 +372,13 @@ impl CallbackTrait for VideoCallback {
         let renderer = resources
             .get_mut::<VideoRenderer>()
             .expect("video renderer");
-        if let Err(error) = renderer.prepare(device, self.id, self.frame.clone()) {
+        if let Err(error) = renderer.prepare(
+            device,
+            self.id,
+            self.frame.clone(),
+            self.size,
+            self.corner_radius,
+        ) {
             renderer.pictures.remove(&self.id);
             renderer.errors.insert(self.id, error.to_string());
         }
@@ -488,7 +508,15 @@ pub(crate) mod tests {
             let frame = decoded.unwrap();
             assert_eq!(frame.ten_bit, ten_bit);
             let (width, height) = (frame.width, frame.height);
-            renderer.prepare(&state.device, 0, frame).unwrap();
+            renderer
+                .prepare(
+                    &state.device,
+                    0,
+                    frame,
+                    egui::vec2(width as f32, height as f32),
+                    0.0,
+                )
+                .unwrap();
             let pixels = readback(&state, width, height, |view, encoder| {
                 let mut pass = encoder
                     .begin_render_pass(&wgpu::RenderPassDescriptor {

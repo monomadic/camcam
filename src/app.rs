@@ -4,7 +4,7 @@ use crate::{
     render::{VideoCallback, VideoRenderer},
     stream::{Player, Source, Status},
 };
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Vec2};
 use std::path::Path;
 
 struct CameraFeed {
@@ -44,7 +44,10 @@ impl App {
             .clone();
         let renderer = VideoRenderer::new(&state.device, state.target_format)?;
         state.renderer.write().callback_resources.insert(renderer);
-        context.egui_ctx.set_visuals(egui::Visuals::dark());
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = Color32::TRANSPARENT;
+        visuals.window_fill = Color32::TRANSPARENT;
+        context.egui_ctx.set_visuals(visuals);
         let (cameras, empty_message) = match Config::load(path) {
             Ok(config) => (config.cameras, None),
             Err(_) => {
@@ -168,7 +171,7 @@ impl App {
 
         let full = ui.max_rect();
         let painter = ui.painter();
-        painter.rect_filled(full, 0, Color32::from_gray(11));
+        painter.rect_filled(full, 0, Color32::from_rgba_unmultiplied(0, 0, 0, 190));
         let content = full.shrink(18.0);
         let heading = if self.selected.is_some() {
             "CAMERA FOCUS"
@@ -210,7 +213,20 @@ impl App {
             return;
         }
 
-        let tiles = layout(content, self.feeds.len(), self.selected);
+        let aspects: Vec<_> = self
+            .feeds
+            .iter()
+            .map(|feed| {
+                feed.wall.read(|state| {
+                    state
+                        .frame
+                        .as_ref()
+                        .map(|frame| frame.width as f32 / frame.height as f32)
+                        .unwrap_or(16.0 / 9.0)
+                })
+            })
+            .collect();
+        let tiles = layout(content, &aspects, self.selected);
         let mut active = Vec::new();
         let mut clicked = None;
         for (index, rect) in tiles {
@@ -249,7 +265,6 @@ impl App {
             let painter = ui.painter();
             painter.rect_filled(rect, 6, Color32::from_gray(22));
             let video = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - 35.0));
-            painter.rect_filled(video, 0, Color32::BLACK);
             if let Some(frame) = frame {
                 let video = fit(
                     video,
@@ -258,7 +273,12 @@ impl App {
                 );
                 painter.add(egui_wgpu::Callback::new_paint_callback(
                     video,
-                    VideoCallback { id, frame },
+                    VideoCallback {
+                        id,
+                        frame,
+                        size: video.size(),
+                        corner_radius: 6.0,
+                    },
                 ));
             }
             let footer = Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - 35.0), rect.max);
@@ -283,20 +303,6 @@ impl App {
                 &feed.name,
                 FontId::proportional(13.0),
                 Color32::from_gray(230),
-            );
-            let focused = self.selected == Some(index);
-            painter.rect_stroke(
-                rect,
-                6,
-                Stroke::new(
-                    if focused { 2.0 } else { 1.0 },
-                    if focused {
-                        Color32::from_rgb(60, 145, 255)
-                    } else {
-                        Color32::from_gray(55)
-                    },
-                ),
-                egui::StrokeKind::Inside,
             );
             let response = ui.interact(rect, egui::Id::new(("camera", index)), Sense::click());
             response.widget_info(|| {
@@ -335,6 +341,10 @@ impl eframe::App for App {
         self.show(ui);
     }
 
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn on_exit(&mut self) {
         if let Some(discovery) = self.discovery.take() {
             discovery.shutdown();
@@ -355,37 +365,57 @@ impl eframe::App for App {
     }
 }
 
-pub fn layout(content: Rect, count: usize, selected: Option<usize>) -> Vec<(usize, Rect)> {
+pub fn layout(content: Rect, aspects: &[f32], selected: Option<usize>) -> Vec<(usize, Rect)> {
     if let Some(index) = selected {
         return vec![(index, content)];
     }
+    let count = aspects.len();
     if count == 0 {
         return Vec::new();
     }
     let columns = (1..=count)
         .max_by(|a, b| {
-            let video_width = |columns: usize| {
-                let rows = count.div_ceil(columns);
-                let width = (content.width() - (columns - 1) as f32 * 10.0) / columns as f32;
-                let height = (content.height() - (rows - 1) as f32 * 10.0) / rows as f32;
-                width.min((height - 35.0) * 16.0 / 9.0)
-            };
-            video_width(*a).total_cmp(&video_width(*b))
+            tile_width(content, aspects, *a).total_cmp(&tile_width(content, aspects, *b))
         })
         .unwrap_or(1);
+    let width = tile_width(content, aspects, columns);
     let rows = count.div_ceil(columns);
-    let width = ((content.width() - (columns - 1) as f32 * 10.0) / columns as f32).max(0.0);
-    let height = ((content.height() - (rows - 1) as f32 * 10.0) / rows as f32).max(0.0);
-    (0..count)
-        .map(|index| {
-            let min = content.min
-                + Vec2::new(
-                    (index % columns) as f32 * (width + 10.0),
-                    (index / columns) as f32 * (height + 10.0),
-                );
-            (index, Rect::from_min_size(min, Vec2::new(width, height)))
+    let mut tiles = Vec::with_capacity(count);
+    let mut top = content.top();
+    for row in 0..rows {
+        let first = row * columns;
+        let last = (first + columns).min(count);
+        for index in first..last {
+            let height = width / aspects[index].max(0.01) + 35.0;
+            let min = Pos2::new(
+                content.left() + (index - first) as f32 * (width + 10.0),
+                top,
+            );
+            tiles.push((index, Rect::from_min_size(min, Vec2::new(width, height))));
+        }
+        top += tiles[first..last]
+            .iter()
+            .map(|(_, rect)| rect.height())
+            .fold(0.0, f32::max)
+            + 10.0;
+    }
+    tiles
+}
+
+fn tile_width(content: Rect, aspects: &[f32], columns: usize) -> f32 {
+    let rows = aspects.len().div_ceil(columns);
+    let by_width = (content.width() - (columns - 1) as f32 * 10.0) / columns as f32;
+    let inverse_aspects: f32 = aspects
+        .chunks(columns)
+        .map(|row| {
+            row.iter()
+                .map(|aspect| 1.0 / aspect.max(0.01))
+                .fold(0.0, f32::max)
         })
-        .collect()
+        .sum();
+    let by_height =
+        (content.height() - (rows - 1) as f32 * 10.0 - rows as f32 * 35.0) / inverse_aspects;
+    by_width.min(by_height).max(0.0)
 }
 
 fn fit(rect: Rect, aspect: f32, align_top: bool) -> Rect {
@@ -509,14 +539,24 @@ pub(crate) mod tests {
     #[test]
     fn grid_and_focus_keep_camera_order() {
         let content = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0));
-        let wall = layout(content, 4, None);
+        let aspects = [16.0 / 9.0; 4];
+        let wall = layout(content, &aspects, None);
         assert_eq!(
             wall.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
             [0, 1, 2, 3]
         );
         assert!(wall[0].1.right() < wall[1].1.left());
         assert!(wall[0].1.bottom() < wall[2].1.top());
-        assert_eq!(layout(content, 4, Some(2)), [(2, content)]);
+        for (index, rect) in &wall {
+            assert!((rect.height() - 35.0 - rect.width() / aspects[*index]).abs() < 0.001);
+        }
+        assert_eq!(layout(content, &aspects, Some(2)), [(2, content)]);
+
+        let mixed = layout(content, &[16.0 / 9.0, 4.0 / 3.0, 9.0 / 16.0], None);
+        for (index, rect) in mixed {
+            let aspect = [16.0 / 9.0, 4.0 / 3.0, 9.0 / 16.0][index];
+            assert!((rect.height() - 35.0 - rect.width() / aspect).abs() < 0.001);
+        }
     }
 
     #[test]
@@ -554,7 +594,7 @@ pub(crate) mod tests {
         });
         pass(&mut app, &context, Vec::new(), Some("wall"));
         let content = Rect::from_min_max(Pos2::new(18.0, 48.0), Pos2::new(982.0, 622.0));
-        let point = layout(content, 4, None)[1].1.center();
+        let point = layout(content, &[16.0 / 9.0; 4], None)[1].1.center();
         for pressed in [true, false] {
             pass(
                 &mut app,

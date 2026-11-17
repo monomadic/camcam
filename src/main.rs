@@ -47,7 +47,12 @@ fn main() -> anyhow::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("CamCam")
             .with_inner_size([1000.0, 640.0])
-            .with_min_inner_size([460.0, 320.0]),
+            .with_min_inner_size([460.0, 320.0])
+            .with_icon(eframe::egui::IconData::default())
+            .with_decorations(false)
+            .with_movable_by_background(true)
+            .with_has_shadow(false)
+            .with_transparent(true),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: egui_wgpu::WgpuConfiguration {
             wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
