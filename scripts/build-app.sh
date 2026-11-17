@@ -53,21 +53,25 @@ esac
 cargo build --release "$@"
 binary_dir="${CARGO_TARGET_DIR:-target}/release"
 bundle="$PWD/.build/CamCam.app"
+icon_name="CamCam-$icon.icns"
+icon_version=$(cksum < "assets/icons/$icon.icns" | awk '{print $1}')
+rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS"
 mkdir -p "$bundle/Contents/Resources"
 cp "$binary_dir/camcam" "$bundle/Contents/MacOS/camcam"
-cp "assets/icons/$icon.icns" "$bundle/Contents/Resources/CamCam.icns"
+cp "assets/icons/$icon.icns" "$bundle/Contents/Resources/$icon_name"
 
-cat > "$bundle/Contents/Info.plist" <<'PLIST'
+cat > "$bundle/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>camcam</string>
 <key>CFBundleIdentifier</key><string>local.camcam.viewer</string>
 <key>CFBundleName</key><string>CamCam</string>
-<key>CFBundleIconFile</key><string>CamCam.icns</string>
+<key>CFBundleIconFile</key><string>$icon_name</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1</string>
+<key>CFBundleVersion</key><string>$icon_version</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSLocalNetworkUsageDescription</key><string>CamCam discovers local ONVIF and RTSP cameras and previews their video.</string>
@@ -80,6 +84,9 @@ if [ "$install_after" = 1 ]; then
   destination="/Applications/CamCam.app"
   rm -rf "$destination"
   ditto "$bundle" "$destination"
+  launch_services=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  "$launch_services" -u "$bundle" 2>/dev/null || true
+  "$launch_services" -f "$destination"
   bundle=$destination
   printf 'Installed %s\n' "$bundle"
 fi
