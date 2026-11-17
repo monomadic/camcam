@@ -333,16 +333,22 @@ impl App {
                         self.zoom = FocusZoom::default();
                     } else {
                         let (anchor, factor, drag) = context.input(|i| {
+                            let drag = if response.dragged() {
+                                i.pointer.delta()
+                            } else {
+                                Vec2::ZERO
+                            };
+                            let scroll = if self.zoom.scale > 1.0 {
+                                i.smooth_scroll_delta
+                            } else {
+                                Vec2::ZERO
+                            };
                             (
                                 i.multi_touch()
                                     .map(|touch| touch.center_pos)
                                     .or(i.pointer.hover_pos()),
                                 i.zoom_delta(),
-                                if response.dragged() {
-                                    i.pointer.delta()
-                                } else {
-                                    Vec2::ZERO
-                                },
+                                drag + scroll,
                             )
                         });
                         if let Some(anchor) = anchor.filter(|p| video.contains(*p)) {
@@ -741,6 +747,23 @@ pub(crate) mod tests {
         assert_eq!(app.zoom.scale, 2.0);
         assert_eq!(context.zoom_factor(), ui_zoom);
         assert_eq!(app.selected, Some(1));
+        let scroll = |delta| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta,
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        };
+        let before_scroll = app.zoom.center;
+        pass(
+            &mut app,
+            &context,
+            vec![scroll(Vec2::new(60.0, 30.0))],
+            Some("focus-scroll"),
+        );
+        assert!(app.zoom.center.x < before_scroll.x);
+        assert!(app.zoom.center.y < before_scroll.y);
+        assert_eq!(app.zoom.scale, 2.0);
+        assert_eq!(app.selected, Some(1));
         let center_before_pan = app.zoom.center;
         let start = Pos2::new(600.0, 300.0);
         let end = Pos2::new(650.0, 330.0);
@@ -766,6 +789,8 @@ pub(crate) mod tests {
         }
         assert_eq!(app.zoom.scale, 1.0);
         assert_eq!(app.selected, Some(1));
+        pass(&mut app, &context, vec![scroll(Vec2::splat(100.0))], None);
+        assert_eq!(app.zoom.center, Vec2::splat(0.5));
         pass(&mut app, &context, vec![egui::Event::Zoom(2.0)], None);
         // Returning to the wall releases the additional main-stream worker.
         pass(
