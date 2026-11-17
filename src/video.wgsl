@@ -1,4 +1,4 @@
-struct Conversion { levels: vec4<f32>, matrix: vec4<f32>, rounding: vec4<f32> }
+struct Conversion { levels: vec4<f32>, matrix: vec4<f32>, rounding: vec4<f32>, sampling: vec4<f32> }
 @group(0) @binding(0) var luma: texture_2d<f32>;
 @group(0) @binding(1) var chroma: texture_2d<f32>;
 @group(0) @binding(2) var bilinear: sampler;
@@ -23,9 +23,10 @@ struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
         let distance = length(max(corner, vec2(0.0))) + min(max(corner.x, corner.y), 0.0) - radius;
         alpha = 1.0 - smoothstep(-0.5, 0.5, distance);
     }
+    let sample_uv = conversion.sampling.xy + vertex.uv * conversion.sampling.zw;
     let levels = conversion.levels;
-    let y = (textureSample(luma, bilinear, vertex.uv).r - levels.x) * levels.y;
-    let uv = (textureSample(chroma, bilinear, vertex.uv).rg - levels.z) * levels.w;
+    let y = (textureSample(luma, bilinear, sample_uv).r - levels.x) * levels.y;
+    let uv = (textureSample(chroma, bilinear, sample_uv).rg - levels.z) * levels.w;
     let kr = conversion.matrix.x;
     let kb = conversion.matrix.y;
     let kg = 1.0 - kr - kb;

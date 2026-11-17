@@ -358,6 +358,7 @@ impl DiscoveryUi {
                     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                         rect,
                         VideoCallback {
+                            uv_rect: Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                             id: 0,
                             frame,
                             size: rect.size(),

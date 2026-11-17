@@ -53,6 +53,7 @@ struct Picture {
     bind_group: wgpu::BindGroup,
     size: egui::Vec2,
     corner_radius: f32,
+    uv_rect: egui::Rect,
 }
 
 pub struct VideoRenderer {
@@ -71,6 +72,7 @@ struct Conversion {
     levels: [f32; 4],
     matrix: [f32; 4],
     rounding: [f32; 4],
+    sampling: [f32; 4],
 }
 
 impl VideoRenderer {
@@ -265,9 +267,13 @@ impl VideoRenderer {
         frame: Arc<VideoFrame>,
         size: egui::Vec2,
         corner_radius: f32,
+        uv_rect: egui::Rect,
     ) -> Result<()> {
         if self.pictures.get(&id).is_some_and(|p| {
-            Arc::ptr_eq(&p.frame, &frame) && p.size == size && p.corner_radius == corner_radius
+            Arc::ptr_eq(&p.frame, &frame)
+                && p.size == size
+                && p.corner_radius == corner_radius
+                && p.uv_rect == uv_rect
         }) {
             return Ok(());
         }
@@ -297,6 +303,12 @@ impl VideoRenderer {
             levels,
             matrix: [kr, kb, self.format.is_srgb() as u8 as f32, 0.0],
             rounding: [size.x, size.y, corner_radius, 0.0],
+            sampling: [
+                uv_rect.min.x,
+                uv_rect.min.y,
+                uv_rect.width(),
+                uv_rect.height(),
+            ],
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera color"),
@@ -332,6 +344,7 @@ impl VideoRenderer {
                 bind_group,
                 size,
                 corner_radius,
+                uv_rect,
             },
         );
         self.errors.remove(&id);
@@ -358,6 +371,7 @@ pub struct VideoCallback {
     pub frame: Arc<VideoFrame>,
     pub size: egui::Vec2,
     pub corner_radius: f32,
+    pub uv_rect: egui::Rect,
 }
 
 impl CallbackTrait for VideoCallback {
@@ -378,6 +392,7 @@ impl CallbackTrait for VideoCallback {
             self.frame.clone(),
             self.size,
             self.corner_radius,
+            self.uv_rect,
         ) {
             renderer.pictures.remove(&self.id);
             renderer.errors.insert(self.id, error.to_string());
@@ -515,6 +530,7 @@ pub(crate) mod tests {
                     frame,
                     egui::vec2(width as f32, height as f32),
                     0.0,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 )
                 .unwrap();
             let pixels = readback(&state, width, height, |view, encoder| {

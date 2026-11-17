@@ -13,6 +13,40 @@ struct CameraFeed {
     focus: Option<Player>,
 }
 
+#[derive(Clone, Copy)]
+struct FocusZoom {
+    scale: f32,
+    center: Vec2,
+}
+
+impl Default for FocusZoom {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            center: Vec2::splat(0.5),
+        }
+    }
+}
+
+impl FocusZoom {
+    fn uv_rect(self) -> Rect {
+        Rect::from_center_size(self.center.to_pos2(), Vec2::splat(1.0 / self.scale))
+    }
+
+    fn update(&mut self, video: Rect, anchor: Pos2, factor: f32, drag: Vec2) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        let anchor = (anchor - video.min) / video.size() - Vec2::splat(0.5);
+        let before = self.scale;
+        self.scale = (self.scale * factor).clamp(1.0, 8.0);
+        self.center += anchor * (1.0 / before - 1.0 / self.scale);
+        self.center -= drag / video.size() / self.scale;
+        let half = Vec2::splat(0.5 / self.scale);
+        self.center = self.center.clamp(half, Vec2::splat(1.0) - half);
+    }
+}
+
 pub struct App {
     feeds: Vec<CameraFeed>,
     selected: Option<usize>,
@@ -21,6 +55,7 @@ pub struct App {
     discovery: Option<DiscoveryUi>,
     config_path: std::path::PathBuf,
     menu: Option<crate::menu::NativeMenu>,
+    zoom: FocusZoom,
 }
 
 impl App {
@@ -73,6 +108,7 @@ impl App {
             discovery: discover.then(|| DiscoveryUi::new(path, &context.egui_ctx)),
             config_path: path.to_owned(),
             menu: None,
+            zoom: FocusZoom::default(),
         })
     }
 
@@ -105,6 +141,7 @@ impl App {
             self.feeds[previous].focus = None;
         }
         self.selected = selection;
+        self.zoom = FocusZoom::default();
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
@@ -230,6 +267,16 @@ impl App {
         let mut active = Vec::new();
         let mut clicked = None;
         for (index, rect) in tiles {
+            let focused = self.selected == Some(index);
+            let response = ui.interact(
+                rect,
+                egui::Id::new(("camera", index)),
+                if focused {
+                    Sense::click_and_drag()
+                } else {
+                    Sense::click()
+                },
+            );
             let feed = &self.feeds[index];
             let (mut frame, mut status, mut detail) = feed
                 .wall
@@ -271,9 +318,36 @@ impl App {
                     frame.width as f32 / frame.height as f32,
                     self.selected.is_none(),
                 );
+                if focused {
+                    if response.double_clicked() {
+                        self.zoom = FocusZoom::default();
+                    } else {
+                        let (anchor, factor, drag) = context.input(|i| {
+                            (
+                                i.multi_touch()
+                                    .map(|touch| touch.center_pos)
+                                    .or(i.pointer.hover_pos()),
+                                i.zoom_delta(),
+                                if response.dragged() {
+                                    i.pointer.delta()
+                                } else {
+                                    Vec2::ZERO
+                                },
+                            )
+                        });
+                        if let Some(anchor) = anchor.filter(|p| video.contains(*p)) {
+                            self.zoom.update(video, anchor, factor, drag);
+                        }
+                    }
+                }
                 painter.add(egui_wgpu::Callback::new_paint_callback(
                     video,
                     VideoCallback {
+                        uv_rect: if focused {
+                            self.zoom.uv_rect()
+                        } else {
+                            FocusZoom::default().uv_rect()
+                        },
                         id,
                         frame,
                         size: video.size(),
@@ -304,7 +378,6 @@ impl App {
                 FontId::proportional(13.0),
                 Color32::from_gray(230),
             );
-            let response = ui.interact(rect, egui::Id::new(("camera", index)), Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(
                     egui::WidgetType::Button,
@@ -312,7 +385,9 @@ impl App {
                     format!("{} — {label}", feed.name),
                 )
             });
-            if response.clicked() {
+            if response.clicked()
+                && !(focused && (self.zoom.scale > 1.0 || response.double_clicked()))
+            {
                 clicked = Some(index);
             }
             if let Some(detail) = detail {
@@ -453,6 +528,8 @@ pub(crate) mod tests {
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 640.0))),
+                // GPU readback time must not change simulated double-click timing.
+                time: Some(context.cumulative_frame_nr() as f64 * 0.1),
                 events,
                 ..Default::default()
             },
@@ -534,6 +611,26 @@ pub(crate) mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn pinch_keeps_anchor_and_clamps_pan_and_zoom() {
+        let video = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0));
+        let anchor = Pos2::new(750.0, 150.0);
+        let mut zoom = FocusZoom::default();
+        zoom.update(video, anchor, 2.0, Vec2::ZERO);
+        assert_eq!(zoom.scale, 2.0);
+        let normalized = (anchor - video.min) / video.size();
+        assert_eq!(
+            zoom.uv_rect().min.to_vec2() + normalized / zoom.scale,
+            normalized
+        );
+        zoom.update(video, anchor, 100.0, Vec2::splat(1e6));
+        assert_eq!(zoom.scale, 8.0);
+        assert!(zoom.uv_rect().min.x >= 0.0 && zoom.uv_rect().max.y <= 1.0);
+        zoom.update(video, anchor, 0.001, Vec2::ZERO);
+        assert_eq!(zoom.scale, 1.0);
+        assert_eq!(zoom.center, Vec2::splat(0.5));
     }
 
     #[test]
@@ -621,6 +718,45 @@ pub(crate) mod tests {
                 .read(|s| s.frame.as_ref().is_some_and(|f| f.width == 1280))
         });
         pass(&mut app, &context, Vec::new(), Some("focus"));
+        let ui_zoom = context.zoom_factor();
+        pass(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(Pos2::new(600.0, 300.0)),
+                egui::Event::Zoom(2.0),
+            ],
+            Some("focus-zoom"),
+        );
+        assert_eq!(app.zoom.scale, 2.0);
+        assert_eq!(context.zoom_factor(), ui_zoom);
+        assert_eq!(app.selected, Some(1));
+        let center_before_pan = app.zoom.center;
+        let start = Pos2::new(600.0, 300.0);
+        let end = Pos2::new(650.0, 330.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: Default::default(),
+        };
+        pass(&mut app, &context, vec![button(start, true)], None);
+        pass(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(end)],
+            None,
+        );
+        assert_ne!(app.zoom.center, center_before_pan);
+        pass(&mut app, &context, vec![button(end, false)], None);
+        assert_eq!(app.selected, Some(1));
+        for _ in 0..2 {
+            pass(&mut app, &context, vec![button(end, true)], None);
+            pass(&mut app, &context, vec![button(end, false)], None);
+        }
+        assert_eq!(app.zoom.scale, 1.0);
+        assert_eq!(app.selected, Some(1));
+        pass(&mut app, &context, vec![egui::Event::Zoom(2.0)], None);
         // Returning to the wall releases the additional main-stream worker.
         pass(
             &mut app,
@@ -635,6 +771,7 @@ pub(crate) mod tests {
             None,
         );
         assert!(app.selected.is_none());
+        assert_eq!(app.zoom.scale, 1.0);
         assert!(app.feeds[1].focus.is_none());
         assert!(
             app.feeds
