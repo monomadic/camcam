@@ -223,27 +223,40 @@ impl App {
         let heading = if self.selected.is_some() {
             "CAMERA FOCUS"
         } else {
-            "CAMERA WALL"
+            "CAMERAS"
         };
-        painter.text(
-            content.left_top(),
-            Align2::LEFT_TOP,
-            heading,
+        let title = painter.layout_no_wrap(
+            heading.into(),
             FontId::monospace(14.0),
             Color32::from_gray(225),
         );
-        let hint = if self.selected.is_some() {
-            "ESC  /  WALL".to_owned()
+        let title_width = title.size().x;
+        painter.galley(content.left_top(), title, Color32::from_gray(225));
+        if self.selected.is_some() {
+            painter.text(
+                content.right_top(),
+                Align2::RIGHT_TOP,
+                "ESC  /  WALL",
+                FontId::monospace(11.0),
+                Color32::GRAY,
+            );
         } else {
-            format!("{} CAMERAS", self.feeds.len())
-        };
-        painter.text(
-            content.right_top(),
-            Align2::RIGHT_TOP,
-            hint,
-            FontId::monospace(11.0),
-            Color32::GRAY,
-        );
+            let count = painter.layout_no_wrap(
+                self.feeds.len().to_string(),
+                FontId::monospace(11.0),
+                Color32::from_gray(225),
+            );
+            let pill = Rect::from_min_size(
+                content.left_top() + Vec2::new(title_width + 10.0, -2.0),
+                Vec2::new(count.size().x + 16.0, 20.0),
+            );
+            painter.rect_filled(pill, 10, Color32::from_gray(43));
+            painter.galley(
+                pill.center() - count.size() * 0.5,
+                count,
+                Color32::from_gray(225),
+            );
+        }
         let content = Rect::from_min_max(content.min + Vec2::new(0.0, 30.0), content.max);
         if self.feeds.is_empty() {
             let message = self
