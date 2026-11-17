@@ -251,7 +251,11 @@ impl App {
             let video = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - 35.0));
             painter.rect_filled(video, 0, Color32::BLACK);
             if let Some(frame) = frame {
-                let video = fit(video, frame.width as f32 / frame.height as f32);
+                let video = fit(
+                    video,
+                    frame.width as f32 / frame.height as f32,
+                    self.selected.is_none(),
+                );
                 painter.add(egui_wgpu::Callback::new_paint_callback(
                     video,
                     VideoCallback { id, frame },
@@ -384,13 +388,18 @@ pub fn layout(content: Rect, count: usize, selected: Option<usize>) -> Vec<(usiz
         .collect()
 }
 
-fn fit(rect: Rect, aspect: f32) -> Rect {
+fn fit(rect: Rect, aspect: f32, align_top: bool) -> Rect {
     let size = Vec2::new(
         rect.width().min(rect.height() * aspect),
         rect.height().min(rect.width() / aspect),
     )
     .max(Vec2::ZERO);
-    Rect::from_center_size(rect.center(), size)
+    let top = if align_top {
+        rect.top()
+    } else {
+        rect.center().y - size.y / 2.0
+    };
+    Rect::from_min_size(Pos2::new(rect.center().x - size.x / 2.0, top), size)
 }
 
 #[cfg(test)]
@@ -508,6 +517,23 @@ pub(crate) mod tests {
         assert!(wall[0].1.right() < wall[1].1.left());
         assert!(wall[0].1.bottom() < wall[2].1.top());
         assert_eq!(layout(content, 4, Some(2)), [(2, content)]);
+    }
+
+    #[test]
+    fn thumbnails_keep_aspect_ratio_and_align_to_top() {
+        let tile = Rect::from_min_size(Pos2::new(20.0, 30.0), Vec2::new(300.0, 300.0));
+        let wide = fit(tile, 16.0 / 9.0, true);
+        assert_eq!(wide.top(), tile.top());
+        assert_eq!(wide.center().x, tile.center().x);
+        assert!((wide.width() / wide.height() - 16.0 / 9.0).abs() < 0.001);
+
+        let portrait = fit(tile, 9.0 / 16.0, true);
+        assert_eq!(portrait.top(), tile.top());
+        assert_eq!(portrait.center().x, tile.center().x);
+        assert!((portrait.width() / portrait.height() - 9.0 / 16.0).abs() < 0.001);
+
+        let focused = fit(tile, 16.0 / 9.0, false);
+        assert_eq!(focused.center(), tile.center());
     }
 
     #[test]
