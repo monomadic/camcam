@@ -34,7 +34,9 @@ cargo build --release "$@"
 binary_dir="${CARGO_TARGET_DIR:-target}/release"
 bundle="$PWD/.build/CamCam.app"
 mkdir -p "$bundle/Contents/MacOS"
+mkdir -p "$bundle/Contents/Resources"
 cp "$binary_dir/camcam" "$bundle/Contents/MacOS/camcam"
+cp assets/CamCam.icns "$bundle/Contents/Resources/CamCam.icns"
 
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -43,6 +45,7 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>camcam</string>
 <key>CFBundleIdentifier</key><string>local.camcam.viewer</string>
 <key>CFBundleName</key><string>CamCam</string>
+<key>CFBundleIconFile</key><string>CamCam.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
