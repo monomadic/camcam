@@ -146,6 +146,9 @@ impl App {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
+        let full = ui.max_rect();
+        ui.painter()
+            .rect_filled(full, 12, Color32::from_rgba_unmultiplied(0, 0, 0, 190));
         if self.menu.as_ref().is_some_and(|menu| menu.take_scan()) {
             self.open_scanner(&context);
         }
@@ -153,7 +156,16 @@ impl App {
             context.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.discovery.is_some()
-            && (ui.button("← Back to wall").clicked()
+            && (egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: 18,
+                    right: 18,
+                    top: 12,
+                    bottom: 0,
+                })
+                .show(ui, |ui| ui.button("← Back to wall"))
+                .inner
+                .clicked()
                 || context.input(|i| i.key_pressed(egui::Key::Escape)))
         {
             if let Some(discovery) = self.discovery.take() {
@@ -206,9 +218,7 @@ impl App {
             }
         }
 
-        let full = ui.max_rect();
         let painter = ui.painter();
-        painter.rect_filled(full, 0, Color32::from_rgba_unmultiplied(0, 0, 0, 190));
         let content = full.shrink(18.0);
         let heading = if self.selected.is_some() {
             "CAMERA FOCUS"
