@@ -528,15 +528,7 @@ impl App {
         );
         let title_width = title.size().x;
         painter.galley(content.left_top(), title, Color32::from_gray(225));
-        if self.selected.is_some() {
-            painter.text(
-                content.right_top() - Vec2::new(36.0, 0.0),
-                Align2::RIGHT_TOP,
-                "ESC  /  WALL",
-                FontId::monospace(11.0),
-                Color32::GRAY,
-            );
-        } else {
+        if self.selected.is_none() {
             let count = painter.layout_no_wrap(
                 self.feeds.len().to_string(),
                 FontId::new(11.0, egui::FontFamily::Name("camera-count".into())),
