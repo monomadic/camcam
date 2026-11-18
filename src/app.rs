@@ -265,6 +265,18 @@ impl App {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let full = ui.max_rect();
+        if !ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            let header = Rect::from_min_max(
+                full.min + Vec2::new(28.0, 12.0),
+                Pos2::new(full.right() - 56.0, full.top() + 40.0),
+            );
+            if ui
+                .interact(header, egui::Id::new("window-header"), Sense::drag())
+                .drag_started()
+            {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+        }
         self.show_contents(ui);
         self.resize_controls(ui, full);
         self.floating_button(ui, full);
@@ -1074,6 +1086,40 @@ pub(crate) mod tests {
             assert_eq!(app.floating, expected);
             assert!(commands.iter().any(|command|matches!(command,egui::ViewportCommand::WindowLevel(value) if *value==level)));
         }
+        let header = Pos2::new(300.0, 25.0);
+        let header_button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: Default::default(),
+        };
+        let mut drag_commands = pass(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(header),
+                header_button(header, true),
+            ],
+            None,
+        );
+        let moved_header = header + Vec2::new(30.0, 0.0);
+        drag_commands.extend(pass(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(moved_header)],
+            None,
+        ));
+        assert!(
+            drag_commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::StartDrag))
+        );
+        pass(
+            &mut app,
+            &context,
+            vec![header_button(moved_header, false)],
+            None,
+        );
         let key = |key, modifiers| {
             vec![
                 egui::Event::Key {

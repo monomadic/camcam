@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
             .with_min_inner_size([460.0, 320.0])
             .with_icon(eframe::egui::IconData::default())
             .with_decorations(false)
-            .with_movable_by_background(true)
+            .with_movable_by_background(false)
             .with_has_shadow(false)
             .with_transparent(true),
         renderer: eframe::Renderer::Wgpu,
