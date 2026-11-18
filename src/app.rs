@@ -47,6 +47,48 @@ impl FocusZoom {
     }
 }
 
+#[derive(Clone, Copy)]
+struct WindowResize {
+    direction: egui::ResizeDirection,
+    window: Rect,
+    pointer: Pos2,
+}
+
+fn resized_window(window: Rect, direction: egui::ResizeDirection, delta: Vec2) -> Rect {
+    use egui::ResizeDirection::*;
+    let mut bounds = window;
+    if matches!(direction, West | NorthWest | SouthWest) {
+        bounds.min.x = (window.min.x + delta.x).min(window.max.x - 460.0);
+    }
+    if matches!(direction, East | NorthEast | SouthEast) {
+        bounds.max.x = (window.max.x + delta.x).max(window.min.x + 460.0);
+    }
+    if matches!(direction, North | NorthWest | NorthEast) {
+        bounds.min.y = (window.min.y + delta.y).min(window.max.y - 320.0);
+    }
+    if matches!(direction, South | SouthWest | SouthEast) {
+        bounds.max.y = (window.max.y + delta.y).max(window.min.y + 320.0);
+    }
+    bounds
+}
+
+fn thumbnail_window_size(full: Rect, aspects: &[f32], selected: Option<usize>) -> Option<Vec2> {
+    if aspects.is_empty() {
+        return None;
+    }
+    let content = full.shrink(18.0);
+    let content = Rect::from_min_max(content.min + Vec2::new(0.0, 30.0), content.max);
+    let tiles = layout(content, aspects, selected);
+    let extent = tiles
+        .iter()
+        .fold(full.min, |point, (_, rect)| point.max(rect.max));
+    Some(
+        (extent - full.min + Vec2::splat(18.0))
+            .max(Vec2::new(460.0, 320.0))
+            .ceil(),
+    )
+}
+
 pub struct App {
     feeds: Vec<CameraFeed>,
     selected: Option<usize>,
@@ -57,6 +99,7 @@ pub struct App {
     menu: Option<crate::menu::NativeMenu>,
     zoom: FocusZoom,
     floating: bool,
+    resizing: Option<WindowResize>,
 }
 
 impl App {
@@ -125,6 +168,7 @@ impl App {
             menu: None,
             zoom: FocusZoom::default(),
             floating: false,
+            resizing: None,
         })
     }
 
@@ -220,11 +264,161 @@ impl App {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        let full = ui.max_rect();
+        self.show_contents(ui);
+        self.resize_controls(ui, full);
+        self.floating_button(ui, full);
+    }
+
+    fn resize_controls(&mut self, ui: &mut egui::Ui, full: Rect) {
+        if ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            return;
+        }
+        use egui::ResizeDirection::*;
+        let corner = 28.0;
+        let edge = 12.0;
+        let regions = [
+            (
+                North,
+                Rect::from_min_max(
+                    full.min + Vec2::new(corner, 0.0),
+                    Pos2::new(full.right() - corner, full.top() + edge),
+                ),
+            ),
+            (
+                South,
+                Rect::from_min_max(
+                    Pos2::new(full.left() + corner, full.bottom() - edge),
+                    full.max - Vec2::new(corner, 0.0),
+                ),
+            ),
+            (
+                West,
+                Rect::from_min_max(
+                    full.min + Vec2::new(0.0, corner),
+                    Pos2::new(full.left() + edge, full.bottom() - corner),
+                ),
+            ),
+            (
+                East,
+                Rect::from_min_max(
+                    Pos2::new(full.right() - edge, full.top() + corner),
+                    full.max - Vec2::new(0.0, corner),
+                ),
+            ),
+            (
+                NorthWest,
+                Rect::from_min_size(full.min, Vec2::splat(corner)),
+            ),
+            (
+                NorthEast,
+                Rect::from_min_size(
+                    Pos2::new(full.right() - corner, full.top()),
+                    Vec2::splat(corner),
+                ),
+            ),
+            (
+                SouthWest,
+                Rect::from_min_size(
+                    Pos2::new(full.left(), full.bottom() - corner),
+                    Vec2::splat(corner),
+                ),
+            ),
+            (
+                SouthEast,
+                Rect::from_min_size(full.max - Vec2::splat(corner), Vec2::splat(corner)),
+            ),
+        ];
+        for (direction, rect) in regions {
+            let response = ui.interact(
+                rect,
+                egui::Id::new(("window-resize", direction as u8)),
+                Sense::click_and_drag(),
+            );
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(match direction {
+                    North | South => egui::CursorIcon::ResizeVertical,
+                    East | West => egui::CursorIcon::ResizeHorizontal,
+                    NorthWest | SouthEast => egui::CursorIcon::ResizeNwSe,
+                    NorthEast | SouthWest => egui::CursorIcon::ResizeNeSw,
+                });
+            }
+            if direction == SouthEast {
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        "Resize window; double-click to fit cameras",
+                    )
+                });
+                if response.double_clicked() && self.discovery.is_none() {
+                    let aspects = self
+                        .feeds
+                        .iter()
+                        .map(|feed| {
+                            feed.wall.read(|s| {
+                                s.frame
+                                    .as_ref()
+                                    .map(|f| f.width as f32 / f.height as f32)
+                                    .unwrap_or(16.0 / 9.0)
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(size) = thumbnail_window_size(full, &aspects, self.selected) {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                    }
+                    self.resizing = None;
+                }
+            }
+            if response.is_pointer_button_down_on() && self.resizing.is_none() {
+                let window = ui.ctx().input(|i| i.viewport().inner_rect).unwrap_or(full);
+                if let Some(pointer) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                    self.resizing = Some(WindowResize {
+                        direction,
+                        window,
+                        pointer: window.min + pointer.to_vec2(),
+                    });
+                }
+            }
+        }
+        if let Some(resize) = self.resizing {
+            let (down, pointer, window) = ui.ctx().input(|i| {
+                (
+                    i.pointer.primary_down(),
+                    i.pointer.interact_pos(),
+                    i.viewport().inner_rect.unwrap_or(full),
+                )
+            });
+            if !down {
+                self.resizing = None;
+            } else if let Some(pointer) = pointer {
+                let delta = window.min + pointer.to_vec2() - resize.pointer;
+                if delta != Vec2::ZERO {
+                    let bounds = resized_window(resize.window, resize.direction, delta);
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::OuterPosition(bounds.min));
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::InnerSize(bounds.size()));
+                }
+            }
+        }
+        for offset in [0.0, 4.0, 8.0] {
+            ui.painter().line_segment(
+                [
+                    full.max - Vec2::new(17.0 - offset, 7.0),
+                    full.max - Vec2::new(7.0, 17.0 - offset),
+                ],
+                egui::Stroke::new(1.0, Color32::from_gray(150)),
+            );
+        }
+    }
+
+    fn show_contents(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
         let full = ui.max_rect();
         ui.painter()
             .rect_filled(full, 12, Color32::from_rgba_unmultiplied(0, 0, 0, 190));
-        self.floating_button(ui, full);
         if self.menu.as_ref().is_some_and(|menu| menu.take_scan()) {
             self.open_scanner(&context);
         }
@@ -729,6 +923,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn resize_preserves_opposite_edges_and_minimum_size() {
+        let window = Rect::from_min_size(Pos2::new(100.0, 80.0), Vec2::new(1000.0, 640.0));
+        let smaller = resized_window(
+            window,
+            egui::ResizeDirection::NorthWest,
+            Vec2::splat(1000.0),
+        );
+        assert_eq!(smaller.max, window.max);
+        assert_eq!(smaller.size(), Vec2::new(460.0, 320.0));
+        let larger = resized_window(
+            window,
+            egui::ResizeDirection::SouthEast,
+            Vec2::new(50.0, 30.0),
+        );
+        assert_eq!(larger.min, window.min);
+        assert_eq!(larger.size(), Vec2::new(1050.0, 670.0));
+        let full = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 640.0));
+        assert!(thumbnail_window_size(full, &[], None).is_none());
+        let size = thumbnail_window_size(full, &[16.0 / 9.0; 2], None).unwrap();
+        assert_eq!(size.x, 1000.0);
+        assert!(size.y < 640.0 && size.y >= 320.0);
+    }
+
+    #[test]
     fn pinch_keeps_anchor_and_clamps_pan_and_zoom() {
         let video = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 600.0));
         let anchor = Pos2::new(750.0, 150.0);
@@ -838,6 +1056,56 @@ pub(crate) mod tests {
             assert_eq!(app.floating, expected);
             assert!(commands.iter().any(|command|matches!(command,egui::ViewportCommand::WindowLevel(value) if *value==level)));
         }
+        let corner = Pos2::new(990.0, 630.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: Default::default(),
+        };
+        pass(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(corner), button(corner, true)],
+            None,
+        );
+        let end = corner + Vec2::new(50.0, 30.0);
+        let commands = pass(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(end)],
+            None,
+        );
+        assert!(commands.iter().any(|command| matches!(command,
+            egui::ViewportCommand::InnerSize(size) if *size==Vec2::new(1050.0,670.0))));
+        pass(&mut app, &context, vec![button(end, false)], None);
+        pass(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(corner)],
+            None,
+        );
+        let mut snapped = false;
+        for _ in 0..2 {
+            pass(&mut app, &context, vec![button(corner, true)], None);
+            let commands = pass(&mut app, &context, vec![button(corner, false)], None);
+            if commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_)))
+            {
+                snapped = true;
+                let expected = thumbnail_window_size(
+                    Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 640.0)),
+                    &[16.0 / 9.0; 4],
+                    None,
+                )
+                .unwrap();
+                assert!(commands.iter().any(|command| matches!(command,
+                    egui::ViewportCommand::InnerSize(size) if *size==expected)));
+            }
+        }
+        assert!(snapped);
+        assert!(app.resizing.is_none());
         let content = Rect::from_min_max(Pos2::new(18.0, 48.0), Pos2::new(982.0, 622.0));
         let point = layout(content, &[16.0 / 9.0; 4], None)[1].1.center();
         for pressed in [true, false] {
