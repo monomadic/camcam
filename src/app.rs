@@ -56,6 +56,7 @@ pub struct App {
     config_path: std::path::PathBuf,
     menu: Option<crate::menu::NativeMenu>,
     zoom: FocusZoom,
+    floating: bool,
 }
 
 impl App {
@@ -83,6 +84,20 @@ impl App {
         visuals.panel_fill = Color32::TRANSPARENT;
         visuals.window_fill = Color32::TRANSPARENT;
         context.egui_ctx.set_visuals(visuals);
+        let mut fonts = egui::FontDefinitions::default();
+        let mut count_fonts = fonts.families[&egui::FontFamily::Monospace].clone();
+        if let Ok(bytes) = std::fs::read("/System/Library/Fonts/Supplemental/Arial Bold.ttf") {
+            fonts.font_data.insert(
+                "camera-count-bold".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            count_fonts.insert(0, "camera-count-bold".into());
+        }
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("camera-count".into()), count_fonts);
+        context.egui_ctx.set_fonts(fonts);
+
         let (cameras, empty_message) = match Config::load(path) {
             Ok(config) => (config.cameras, None),
             Err(_) => {
@@ -109,6 +124,7 @@ impl App {
             config_path: path.to_owned(),
             menu: None,
             zoom: FocusZoom::default(),
+            floating: false,
         })
     }
 
@@ -144,11 +160,71 @@ impl App {
         self.zoom = FocusZoom::default();
     }
 
+    fn floating_button(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let rect = Rect::from_min_size(
+            Pos2::new(full.right() - 44.0, full.top() + 12.0),
+            Vec2::splat(26.0),
+        );
+        let response = ui.interact(rect, egui::Id::new("floating-window"), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Checkbox,
+                true,
+                self.floating,
+                "Keep window on top",
+            )
+        });
+        if response.clicked() {
+            self.floating = !self.floating;
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.floating {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                }));
+        }
+        let painter = ui.painter();
+        if self.floating || response.hovered() {
+            painter.rect_filled(
+                rect,
+                6,
+                if self.floating {
+                    Color32::from_rgb(35, 75, 115)
+                } else {
+                    Color32::from_gray(43)
+                },
+            );
+        }
+        let color = if self.floating {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(170)
+        };
+        let point = |x, y| rect.min + Vec2::new(x, y);
+        painter.add(egui::Shape::closed_line(
+            vec![
+                point(9.0, 5.0),
+                point(17.0, 5.0),
+                point(15.0, 11.0),
+                point(19.0, 15.0),
+                point(7.0, 15.0),
+                point(11.0, 11.0),
+            ],
+            egui::Stroke::new(1.3, color),
+        ));
+        painter.line_segment(
+            [point(13.0, 15.0), point(13.0, 22.0)],
+            egui::Stroke::new(1.3, color),
+        );
+        response.on_hover_text("Keep window on top");
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
         let full = ui.max_rect();
         ui.painter()
             .rect_filled(full, 12, Color32::from_rgba_unmultiplied(0, 0, 0, 190));
+        self.floating_button(ui, full);
         if self.menu.as_ref().is_some_and(|menu| menu.take_scan()) {
             self.open_scanner(&context);
         }
@@ -234,7 +310,7 @@ impl App {
         painter.galley(content.left_top(), title, Color32::from_gray(225));
         if self.selected.is_some() {
             painter.text(
-                content.right_top(),
+                content.right_top() - Vec2::new(36.0, 0.0),
                 Align2::RIGHT_TOP,
                 "ESC  /  WALL",
                 FontId::monospace(11.0),
@@ -243,7 +319,7 @@ impl App {
         } else {
             let count = painter.layout_no_wrap(
                 self.feeds.len().to_string(),
-                FontId::monospace(11.0),
+                FontId::new(11.0, egui::FontFamily::Name("camera-count".into())),
                 Color32::from_gray(225),
             );
             let pill = Rect::from_min_size(
@@ -542,9 +618,14 @@ pub(crate) mod tests {
     use crate::render::tests::{gpu, readback};
     use std::time::{Duration, Instant};
 
-    fn pass(app: &mut App, context: &egui::Context, events: Vec<egui::Event>, image: Option<&str>) {
+    fn pass(
+        app: &mut App,
+        context: &egui::Context,
+        events: Vec<egui::Event>,
+        image: Option<&str>,
+    ) -> Vec<egui::ViewportCommand> {
         let state = app.render_state.clone();
-        paint(context, &state, events, image, |ui| app.show(ui));
+        paint(context, &state, events, image, |ui| app.show(ui))
     }
 
     pub(crate) fn paint(
@@ -553,7 +634,7 @@ pub(crate) mod tests {
         events: Vec<egui::Event>,
         image: Option<&str>,
         mut show: impl FnMut(&mut egui::Ui),
-    ) {
+    ) -> Vec<egui::ViewportCommand> {
         let mut output = context.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 640.0))),
@@ -629,6 +710,11 @@ pub(crate) mod tests {
             )
             .unwrap();
         }
+        output
+            .viewport_output
+            .remove(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands)
+            .unwrap_or_default()
     }
 
     fn wait_until(mut ready: impl FnMut() -> bool) {
@@ -719,6 +805,39 @@ pub(crate) mod tests {
                 .all(|f| f.wall.read(|s| s.status == Status::Live))
         });
         pass(&mut app, &context, Vec::new(), Some("wall"));
+        for (expected, level) in [
+            (true, egui::WindowLevel::AlwaysOnTop),
+            (false, egui::WindowLevel::Normal),
+        ] {
+            let point = Pos2::new(969.0, 25.0);
+            pass(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+                None,
+            );
+            let commands = pass(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                None,
+            );
+            assert_eq!(app.floating, expected);
+            assert!(commands.iter().any(|command|matches!(command,egui::ViewportCommand::WindowLevel(value) if *value==level)));
+        }
         let content = Rect::from_min_max(Pos2::new(18.0, 48.0), Pos2::new(982.0, 622.0));
         let point = layout(content, &[16.0 / 9.0; 4], None)[1].1.center();
         for pressed in [true, false] {
