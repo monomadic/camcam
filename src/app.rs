@@ -272,6 +272,7 @@ impl App {
 
     fn resize_controls(&mut self, ui: &mut egui::Ui, full: Rect) {
         if ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            self.resizing = None;
             return;
         }
         use egui::ResizeDirection::*;
@@ -467,6 +468,31 @@ impl App {
                 context.request_repaint();
             }
             return;
+        }
+        let toggle_fullscreen = context.input_mut(|i| {
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let command_f = i.consume_key(egui::Modifiers::COMMAND, egui::Key::F);
+            enter || command_f
+        });
+        if toggle_fullscreen {
+            let fullscreen = context.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+            self.resizing = None;
+        }
+        if let Some(index) = self.selected {
+            let step = context.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
+                    Some(-1)
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                    Some(1)
+                } else {
+                    None
+                }
+            });
+            if let Some(step) = step {
+                let next = (index as isize + step).rem_euclid(self.feeds.len() as isize) as usize;
+                self.select(Some(next));
+            }
         }
         if context.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.select(None);
@@ -1056,6 +1082,67 @@ pub(crate) mod tests {
             assert_eq!(app.floating, expected);
             assert!(commands.iter().any(|command|matches!(command,egui::ViewportCommand::WindowLevel(value) if *value==level)));
         }
+        let key = |key, modifiers| {
+            vec![
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                },
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                },
+            ]
+        };
+        for (key_code, modifiers) in [
+            (egui::Key::Enter, egui::Modifiers::NONE),
+            (egui::Key::F, egui::Modifiers::COMMAND),
+        ] {
+            let commands = pass(&mut app, &context, key(key_code, modifiers), None);
+            assert!(
+                commands
+                    .iter()
+                    .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(true)))
+            );
+        }
+        let state = app.render_state.clone();
+        let commands = paint(
+            &context,
+            &state,
+            key(egui::Key::F, egui::Modifiers::COMMAND),
+            None,
+            |ui| {
+                ui.ctx().input_mut(|i| {
+                    i.raw
+                        .viewports
+                        .get_mut(&egui::ViewportId::ROOT)
+                        .unwrap()
+                        .fullscreen = Some(true)
+                });
+                app.show(ui);
+            },
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(false)))
+        );
+        paint(&context, &state, Vec::new(), None, |ui| {
+            ui.ctx().input_mut(|i| {
+                i.raw
+                    .viewports
+                    .get_mut(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .fullscreen = Some(false)
+            });
+            app.show(ui);
+        });
         let corner = Pos2::new(990.0, 630.0);
         let button = |pos, pressed| egui::Event::PointerButton {
             pos,
@@ -1192,6 +1279,30 @@ pub(crate) mod tests {
         pass(&mut app, &context, vec![scroll(Vec2::splat(100.0))], None);
         assert_eq!(app.zoom.center, Vec2::splat(0.5));
         pass(&mut app, &context, vec![egui::Event::Zoom(2.0)], None);
+        for expected in [2, 3, 0, 1] {
+            pass(
+                &mut app,
+                &context,
+                key(egui::Key::Tab, egui::Modifiers::NONE),
+                None,
+            );
+            assert_eq!(app.selected, Some(expected));
+            assert_eq!(app.zoom.scale, 1.0);
+        }
+        pass(
+            &mut app,
+            &context,
+            key(egui::Key::Tab, egui::Modifiers::SHIFT),
+            None,
+        );
+        assert_eq!(app.selected, Some(0));
+        pass(
+            &mut app,
+            &context,
+            key(egui::Key::Tab, egui::Modifiers::NONE),
+            None,
+        );
+        assert_eq!(app.selected, Some(1));
         // Returning to the wall releases the additional main-stream worker.
         pass(
             &mut app,
